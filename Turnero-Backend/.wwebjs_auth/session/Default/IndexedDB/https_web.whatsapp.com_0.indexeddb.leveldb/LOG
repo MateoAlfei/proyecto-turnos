@@ -1,0 +1,18 @@
+2026/04/06-14:58:13.230 6cb8 Reusing MANIFEST C:\Users\Facub\OneDrive\Escritorio\proyecto turnos\Turnero-Backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/06-14:58:13.231 6cb8 Recovering log #321
+2026/04/06-14:58:13.233 6cb8 Reusing old log C:\Users\Facub\OneDrive\Escritorio\proyecto turnos\Turnero-Backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000321.log 
+2026/04/06-14:58:13.234 6cb8 Delete type=2 #320
+2026/04/06-14:58:13.493 4a78 Manual compaction at level-0 from '\x00Q\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00R\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/04/06-14:58:13.500 4a78 Manual compaction at level-0 from '\x00P\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00Q\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/04/06-14:58:14.334 4a78 Level-0 table #326: started
+2026/04/06-14:58:14.374 4a78 Level-0 table #326: 22000 bytes OK
+2026/04/06-14:58:14.377 4a78 Delete type=0 #321
+2026/04/06-14:58:14.378 4a78 Manual compaction at level-0 from '\x00R\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00S\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/04/06-14:58:14.384 4a78 Level-0 table #328: started
+2026/04/06-14:58:14.387 4a78 Level-0 table #328: 1797 bytes OK
+2026/04/06-14:58:14.390 4a78 Delete type=0 #325
+2026/04/06-14:58:14.391 6294 Manual compaction at level-0 from '\x00S\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00T\x00\x00\x00' @ 0 : 0; will stop at '\x00T\x00\x00\x05' @ 1185751 : 1
+2026/04/06-14:58:14.391 6294 Compacting 1@0 + 1@1 files
+2026/04/06-14:58:14.397 6294 Generated table #329@0: 564 keys, 5004 bytes
+2026/04/06-14:58:14.397 6294 Compacted 1@0 + 1@1 files => 5004 bytes
+2026/04/06-14:58:14.399 6294 compacted to: files[ 0 1 1 0 0 0 0 ]
