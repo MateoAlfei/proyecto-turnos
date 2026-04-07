@@ -1,21 +1,14 @@
 const { Pool } = require('pg');
+require('dotenv').config();
 
-// Acá le pasamos los datos del Docker que acabamos de levantar
+// En la nube, usamos una "Connection String" (un link largo) en vez de usuario y contraseña separados.
+// Si no hay DATABASE_URL en el .env, usa una configuración por defecto para tu PC.
 const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'postgres',
-  password: 'admin',
-  port: 5432,
+  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:admin@localhost:5432/turnero',
+  // La nube exige conexión segura (SSL), así que la activamos si estamos usando el link de la nube
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Probamos la conexión
-pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('Error conectando a la base de datos', err.stack);
-  } else {
-    console.log('¡Base de datos conectada exitosamente! Hora del server DB:', res.rows[0].now);
-  }
-});
-
-module.exports = pool;
+module.exports = {
+  query: (text, params) => pool.query(text, params),
+};
