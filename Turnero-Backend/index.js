@@ -175,17 +175,8 @@ app.post('/api/turnos', async (req, res) => {
     // 4. --- MAGIA DE MAILS ---
     // (Llamamos a tu función de email.js pasándole los datos reales)
   // 4. --- MAGIA DE MAILS ---
-    console.log('--- TEST DE TURNO ---');
-    console.log('Datos recibidos del frontend:', req.body);
-
-    if (email_cliente) {
-      console.log('¡Intentando mandar mail a:', email_cliente, '!');
-      await enviarMailConfirmacion(email_cliente, nombre_cliente, fecha_hora, nombreNegocio);
-    } else {
-      console.log('⚠️ ALERTA: email_cliente llegó vacío, se cancela el envío.');
-    }
-    
     // 5. --- MAGIA DE WHATSAPP SEMI-AUTOMÁTICO ---
+    // (Esto se ejecuta rapidísimo, así que lo dejamos primero)
     let linkWhatsApp = null;
     if (whatsapp_cliente) {
       const textoBase = `¡Hola ${nombre_cliente}! 💈\nTe confirmamos tu turno para el día y hora: ${fecha_hora} en ${nombreNegocio}.\n¡Te esperamos!`;
@@ -193,15 +184,29 @@ app.post('/api/turnos', async (req, res) => {
       linkWhatsApp = `https://wa.me/${whatsapp_cliente}?text=${textoCodificado}`;
     }
 
-    // 6. RESPUESTA AL FRONTEND
+    // 6. RESPUESTA AL FRONTEND (¡LA MOVIMOS ACÁ ARRIBA!)
+    // Le clavamos la respuesta inmediatamente para que la página web no se quede trabada
     res.status(201).json({
-      mensaje: 'Turno guardado, mail en camino y a facturar',
+      mensaje: 'Turno guardado, mail intentando salir y WhatsApp listo',
       turno: resultado.rows[0],
       link_whatsapp_dueno: linkWhatsApp
     });
 
-  }  catch (error) {
-    console.error('ERROR COMPLETO AL GUARDAR/ENVIAR MAIL:', error);
+    // 7. --- MAGIA DE MAILS (EN SEGUNDO PLANO) ---
+    console.log('--- TEST DE TURNO ---');
+    console.log('Datos recibidos del frontend:', req.body);
+
+    if (email_cliente) {
+      console.log('¡Turno guardado! Intentando mandar mail en segundo plano a:', email_cliente);
+      // Fíjate que le sacamos el "await" del principio y le agregamos el ".catch" al final
+      enviarMailConfirmacion(email_cliente, nombre_cliente, fecha_hora, nombreNegocio)
+        .catch(err => console.log('⚠️ Aviso: El correo dio timeout por bloqueo de Render (Modo MVP).'));
+    } else {
+      console.log('⚠️ ALERTA: email_cliente llegó vacío, se cancela el envío.');
+    }
+
+  } catch (error) {
+    console.error('ERROR COMPLETO AL GUARDAR EL TURNO:', error);
     res.status(500).json({ error: 'Hubo un problema al guardar el turno' });
   }
 });
