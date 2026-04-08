@@ -180,7 +180,7 @@ app.post('/api/turnos', async (req, res) => {
 
     if (email_cliente) {
       console.log('¡Intentando mandar mail a:', email_cliente, '!');
-      enviarMailConfirmacion(email_cliente, nombre_cliente, fecha_hora, nombreNegocio);
+      await enviarMailConfirmacion(email_cliente, nombre_cliente, fecha_hora, nombreNegocio);
     } else {
       console.log('⚠️ ALERTA: email_cliente llegó vacío, se cancela el envío.');
     }
