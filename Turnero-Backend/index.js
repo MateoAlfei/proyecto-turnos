@@ -231,7 +231,7 @@ app.get('/api/turnos', async (req, res) => {
       WHERE negocio_id = $1
       ORDER BY fecha_hora ASC
     `;
-    const resultado = await pool.query(query, [negocio_id]);
+    const resultado = await db.query(query, [negocio_id]);
 
     // Le devolvemos la lista completa al Frontend
     res.status(200).json(resultado.rows);
