@@ -54,7 +54,7 @@ const enviarMailConfirmacion = async (emailCliente, nombreCliente, fechaHora, no
 
         // 3. Enviamos el mail
         const info = await transporter.sendMail({
-            from: `"Turnero ${nombreNegocio}" <tu_correo_del_proyecto@gmail.com>`,
+           from: `"Turnero ${nombreNegocio}" <${process.env.EMAIL_USER}>`,
             to: emailCliente,
             subject: `Confirma tu turno en ${nombreNegocio} 📅`,
             html: plantillaHTML
