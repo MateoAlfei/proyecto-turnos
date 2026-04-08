@@ -1,15 +1,22 @@
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-const nodemailer = require('nodemailer');
-
-// 1. Configuramos el "cartero" (Transporter)
+// 1. Configuramos el "cartero" con el puerto seguro de Gmail (465)
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true, // Usa SSL
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
     }
 });
+
+// Agregamos un chismoso para la consola de Render
+console.log('--- TEST DE VARIABLES EN RENDER ---');
+console.log('Usuario de Email:', process.env.EMAIL_USER || '¡ESTÁ VACÍO!');
+console.log('¿Tiene contraseña cargada?:', process.env.EMAIL_PASS ? 'SÍ' : 'NO');
+console.log('-----------------------------------');
 
 // 2. Armamos la función que inyecta los datos en el diseño HTML
 const enviarMailConfirmacion = async (emailCliente, nombreCliente, fechaHora, nombreNegocio) => {

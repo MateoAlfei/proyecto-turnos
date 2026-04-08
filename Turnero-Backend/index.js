@@ -193,8 +193,8 @@ app.post('/api/turnos', async (req, res) => {
       link_whatsapp_dueno: linkWhatsApp
     });
 
-  } catch (error) {
-    console.error('Error al guardar el turno:', error);
+  }  catch (error) {
+    console.error('ERROR COMPLETO AL GUARDAR/ENVIAR MAIL:', error);
     res.status(500).json({ error: 'Hubo un problema al guardar el turno' });
   }
 });
