@@ -82,11 +82,16 @@ export default function Dashboard() {
                   <tr key={turno.id} className="hover:bg-gray-50 transition-colors">
                     <td className="p-4 font-bold text-gray-800">{turno.fecha_hora}</td>
                     <td className="p-4 font-medium text-gray-600">{turno.nombre_cliente}</td>
-                    <td className="p-4 text-gray-500">
-                      <a href={`https://wa.me/${turno.whatsapp_cliente}`} target="_blank" className="text-green-600 hover:underline">
-                        {turno.whatsapp_cliente}
-                      </a>
-                    </td>
+                   <td className="p-4 text-gray-500">
+    <a 
+    href={`https://wa.me/${turno.whatsapp_cliente}?text=${encodeURIComponent(`¡Hola ${turno.nombre_cliente}! 💈\nTe confirmamos tu turno para el día y hora: ${turno.fecha_hora} en Peluquería Raineri.\n¡Te esperamos!`)}`} 
+    target="_blank" 
+    rel="noopener noreferrer"
+    className="text-green-600 hover:underline font-bold flex items-center gap-1"
+  >
+    💬 {turno.whatsapp_cliente}
+  </a>
+</td>
                     <td className="p-4">
                       <button 
                         onClick={() => cancelarTurno(turno.id)}
