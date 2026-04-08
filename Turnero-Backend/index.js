@@ -210,6 +210,37 @@ app.post('/api/turnos', async (req, res) => {
     res.status(500).json({ error: 'Hubo un problema al guardar el turno' });
   }
 });
+
+
+// ==========================================
+// RUTA PARA EL DASHBOARD: OBTENER TURNOS
+// ==========================================
+app.get('/api/turnos', async (req, res) => {
+  try {
+    const { negocio_id } = req.query;
+
+    if (!negocio_id) {
+      return res.status(400).json({ error: 'Falta enviar el negocio_id' });
+    }
+
+    // Buscamos en la base de datos todos los turnos de este negocio
+    // y los ordenamos para que los más recientes salgan primero.
+    const query = `
+      SELECT id, servicio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente
+      FROM turnos
+      WHERE negocio_id = $1
+      ORDER BY fecha_hora ASC
+    `;
+    const resultado = await pool.query(query, [negocio_id]);
+
+    // Le devolvemos la lista completa al Frontend
+    res.status(200).json(resultado.rows);
+
+  } catch (error) {
+    console.error('ERROR AL TRAER LOS TURNOS:', error);
+    res.status(500).json({ error: 'Hubo un problema al consultar la base de datos' });
+  }
+});
 // ==========================================
 //    RUTA PARA CANCELAR UN TURNO 
 // ==========================================
