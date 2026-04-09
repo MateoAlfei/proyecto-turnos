@@ -1,6 +1,41 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE, getAuthHeaders } from '../config';
+
+const MESES = [
+  { v: '1', l: 'Enero' },
+  { v: '2', l: 'Febrero' },
+  { v: '3', l: 'Marzo' },
+  { v: '4', l: 'Abril' },
+  { v: '5', l: 'Mayo' },
+  { v: '6', l: 'Junio' },
+  { v: '7', l: 'Julio' },
+  { v: '8', l: 'Agosto' },
+  { v: '9', l: 'Septiembre' },
+  { v: '10', l: 'Octubre' },
+  { v: '11', l: 'Noviembre' },
+  { v: '12', l: 'Diciembre' }
+];
+
+/** YYYY-MM-DD en calendario local (para comparar con fecha_hora del turno). */
+function fechaLocalKey(val) {
+  if (val == null) return '';
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}/.test(val)) {
+    return val.slice(0, 10);
+  }
+  const parsed = new Date(val);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const y = parsed.getFullYear();
+  const m = String(parsed.getMonth() + 1).padStart(2, '0');
+  const d = String(parsed.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 function badgeEstado(estado) {
   const base = 'text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap';
@@ -17,7 +52,20 @@ export default function Dashboard() {
   const [nombreNegocio, setNombreNegocio] = useState('');
   const [nuevoServicio, setNuevoServicio] = useState({ nombre: '', precio: '' });
   const [guardandoServicio, setGuardandoServicio] = useState(false);
+  const [filtroAgenda, setFiltroAgenda] = useState('todas');
+  const ahora = new Date();
+  const [mesSel, setMesSel] = useState(String(ahora.getMonth() + 1));
+  const [anioSel, setAnioSel] = useState(String(ahora.getFullYear()));
+  const [metricas, setMetricas] = useState(null);
+  const [retencion, setRetencion] = useState(null);
+  const [cargandoMetricas, setCargandoMetricas] = useState(false);
   const navigate = useNavigate();
+
+  const turnosVisibles = useMemo(() => {
+    if (filtroAgenda !== 'hoy') return turnos;
+    const hoyKey = fechaLocalKey(new Date());
+    return turnos.filter((t) => fechaLocalKey(t.fecha_hora) === hoyKey);
+  }, [turnos, filtroAgenda]);
 
   const cargarTurnos = useCallback(async () => {
     const token = localStorage.getItem('turnero_token');
@@ -62,6 +110,28 @@ export default function Dashboard() {
     }
   }, []);
 
+  const cargarInsights = useCallback(async () => {
+    const token = localStorage.getItem('turnero_token');
+    if (!token) return;
+    setCargandoMetricas(true);
+    try {
+      const q = new URLSearchParams({ mes: mesSel, anio: anioSel });
+      const [resM, resR] = await Promise.all([
+        fetch(`${API_BASE}/api/dashboard/metricas?${q}`, { headers: getAuthHeaders() }),
+        fetch(`${API_BASE}/api/dashboard/retencion?dias_inactividad=30`, { headers: getAuthHeaders() })
+      ]);
+      if (resM.ok) setMetricas(await resM.json());
+      else setMetricas(null);
+      if (resR.ok) setRetencion(await resR.json());
+      else setRetencion(null);
+    } catch {
+      setMetricas(null);
+      setRetencion(null);
+    } finally {
+      setCargandoMetricas(false);
+    }
+  }, [mesSel, anioSel]);
+
   const slugPublico = typeof window !== 'undefined' ? localStorage.getItem('turnero_slug') : null;
 
   useEffect(() => {
@@ -69,6 +139,10 @@ export default function Dashboard() {
     cargarTurnos();
     cargarServicios();
   }, [cargarTurnos, cargarServicios]);
+
+  useEffect(() => {
+    cargarInsights();
+  }, [cargarInsights]);
 
   const cerrarSesion = () => {
     localStorage.removeItem('turnero_token');
@@ -177,6 +251,18 @@ export default function Dashboard() {
   const textoWhatsApp = (turno) =>
     `¡Hola ${turno.nombre_cliente}! 💈\nTe confirmamos tu turno para el día y hora: ${turno.fecha_hora} en ${nombreNegocio}.\n¡Te esperamos!`;
 
+  const textoWhatsAppRetencion = (nombre) =>
+    `¡Hola ${nombre}! Hace un tiempo que no te vemos en ${nombreNegocio}. ¿Te gustaría reservar un turno?`;
+
+  const maxCantidadHora =
+    metricas?.distribucion_horaria?.length > 0
+      ? Math.max(...metricas.distribucion_horaria.map((r) => Number(r.cantidad_turnos) || 0), 1)
+      : 1;
+
+  const resumenMes = metricas?.resumen;
+  const facturadoNum = resumenMes ? Number(resumenMes.total_facturado) : 0;
+  const turnosCompletadosMes = resumenMes ? Number(resumenMes.total_turnos) : 0;
+
   return (
     <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
       <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-8">
@@ -203,11 +289,132 @@ export default function Dashboard() {
 
       <div className="max-w-6xl mx-auto space-y-8">
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+          <div className="p-6 border-b border-gray-200 bg-gray-50 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+              <h2 className="text-xl font-bold text-gray-700">Resumen del mes</h2>
+              <div className="flex flex-wrap gap-2 items-center">
+                <select
+                  value={mesSel}
+                  onChange={(e) => setMesSel(e.target.value)}
+                  className="border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-medium bg-white"
+                >
+                  {MESES.map((m) => (
+                    <option key={m.v} value={m.v}>
+                      {m.l}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={2020}
+                  max={2035}
+                  value={anioSel}
+                  onChange={(e) => setAnioSel(e.target.value)}
+                  className="w-24 border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-medium"
+                />
+              </div>
+            </div>
+
+            {cargandoMetricas ? (
+              <p className="text-gray-400 text-sm animate-pulse">Cargando métricas…</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4">
+                  <p className="text-sm text-emerald-800 font-medium">Facturación (turnos completados)</p>
+                  <p className="text-2xl font-bold text-emerald-900 mt-1">
+                    {facturadoNum.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' })}
+                  </p>
+                  <p className="text-xs text-emerald-700 mt-1">{turnosCompletadosMes} turnos en el período</p>
+                </div>
+                <div className="sm:col-span-2 bg-slate-50 border border-slate-100 rounded-xl p-4">
+                  <p className="text-sm font-semibold text-slate-700 mb-3">Horarios con más turnos (histórico, no cancelados)</p>
+                  {metricas?.distribucion_horaria?.length > 0 ? (
+                    <ul className="space-y-2">
+                      {metricas.distribucion_horaria.slice(0, 6).map((row) => {
+                        const n = Number(row.cantidad_turnos) || 0;
+                        const pct = Math.round((n / maxCantidadHora) * 100);
+                        return (
+                          <li key={row.hora} className="flex items-center gap-3 text-sm">
+                            <span className="w-14 font-mono text-slate-600 shrink-0">{row.hora}</span>
+                            <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-slate-600 rounded-full transition-all"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <span className="text-slate-500 w-8 text-right shrink-0">{n}</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p className="text-slate-500 text-sm">Todavía no hay datos de horarios.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {retencion && retencion.clientes_recuperables > 0 && (
+              <div className="border border-amber-100 bg-amber-50/80 rounded-xl p-4">
+                <p className="text-sm font-semibold text-amber-900">
+                  {retencion.clientes_recuperables} cliente{retencion.clientes_recuperables !== 1 ? 's' : ''} sin turno
+                  completado hace más de 30 días
+                </p>
+                <ul className="mt-2 space-y-1 text-sm text-amber-950">
+                  {retencion.lista.slice(0, 5).map((c, i) => (
+                    <li key={`${c.nombre_cliente}-${i}`} className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{c.nombre_cliente}</span>
+                      {c.whatsapp_cliente && (
+                        <a
+                          href={`https://wa.me/${c.whatsapp_cliente}?text=${encodeURIComponent(textoWhatsAppRetencion(c.nombre_cliente))}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-green-700 font-semibold underline"
+                        >
+                          WhatsApp
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                  {retencion.lista.length > 5 && (
+                    <li className="text-amber-800 text-xs">…y {retencion.lista.length - 5} más</li>
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="p-6 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-gray-50">
             <h2 className="text-xl font-bold text-gray-700">Agenda</h2>
-            <span className="bg-blue-100 text-blue-800 text-sm font-bold px-3 py-1 rounded-full">
-              {turnos.length} turnos
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex rounded-lg border-2 border-gray-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setFiltroAgenda('todas')}
+                  className={`px-4 py-2 text-sm font-bold transition-colors ${
+                    filtroAgenda === 'todas' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  Todas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFiltroAgenda('hoy')}
+                  className={`px-4 py-2 text-sm font-bold transition-colors ${
+                    filtroAgenda === 'hoy' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  Solo hoy
+                </button>
+              </div>
+              <span className="bg-blue-100 text-blue-800 text-sm font-bold px-3 py-1 rounded-full">
+                {filtroAgenda === 'hoy' && turnos.length !== turnosVisibles.length
+                  ? `${turnosVisibles.length} hoy · ${turnos.length} total`
+                  : `${turnosVisibles.length} turnos`}
+              </span>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -229,14 +436,16 @@ export default function Dashboard() {
                       Cargando agenda…
                     </td>
                   </tr>
-                ) : turnos.length === 0 ? (
+                ) : turnosVisibles.length === 0 ? (
                   <tr>
                     <td colSpan="6" className="p-8 text-center text-gray-500">
-                      No hay turnos para mostrar.
+                      {filtroAgenda === 'hoy' && turnos.length > 0
+                        ? 'No hay turnos para hoy en tu agenda.'
+                        : 'No hay turnos para mostrar.'}
                     </td>
                   </tr>
                 ) : (
-                  turnos.map((turno) => {
+                  turnosVisibles.map((turno) => {
                     const estado = turno.estado || 'pendiente';
                     return (
                       <tr key={turno.id} className="hover:bg-gray-50 transition-colors">
