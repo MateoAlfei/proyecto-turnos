@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { API_BASE } from '../config';
 
 export default function Login() {
@@ -27,6 +27,8 @@ export default function Login() {
       localStorage.setItem('turnero_token', data.token);
       localStorage.setItem('turnero_negocio_id', String(data.negocio_id));
       localStorage.setItem('turnero_nombre', data.nombre || '');
+      if (data.slug) localStorage.setItem('turnero_slug', data.slug);
+      else localStorage.removeItem('turnero_slug');
       navigate('/admin/dashboard');
     } catch {
       setError('Error de conexión con el servidor');
@@ -75,6 +77,13 @@ export default function Login() {
             {cargando ? 'Entrando…' : 'Entrar'}
           </button>
         </form>
+
+        <p className="text-center text-sm text-gray-500 mt-6">
+          ¿Todavía no tenés cuenta?{' '}
+          <Link to="/registro" className="text-blue-600 font-semibold hover:underline">
+            Crear negocio
+          </Link>
+        </p>
       </div>
     </div>
   );

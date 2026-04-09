@@ -6,6 +6,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { verificarToken } = require('./middleware');
 const { JWT_SECRET } = require('./jwtSecret');
+const { slugify, elegirSlugUnico } = require('./slugUtils');
 const PORT = process.env.PORT || 3000;
 const app = express();
 const { enviarMailConfirmacion, enviarMailCancelacion } = require('./email');
@@ -42,35 +43,61 @@ function generarGrillaHoraria(apertura, cierre, intervaloMinutos) {
 
 // Ruta para REGISTRAR un nuevo negocio (Onboarding)
 app.post('/api/auth/registro', async (req, res) => {
-  // 1. Agregamos telefono_aviso a lo que recibimos del Frontend
-  const { nombre, email, password, hora_apertura, hora_cierre, duracion_turno_minutos, telefono_aviso } = req.body;
+  const {
+    nombre,
+    email,
+    password,
+    hora_apertura,
+    hora_cierre,
+    duracion_turno_minutos,
+    telefono_aviso,
+    slug: slugPedido,
+    direccion
+  } = req.body;
+
+  if (!nombre || !email || !password) {
+    return res.status(400).json({ error: 'Faltan nombre, email o contraseña' });
+  }
+  if (String(password).length < 6) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+  }
 
   try {
     const passwordEncriptada = await bcrypt.hash(password, 10);
 
-    // 2. Agregamos telefono_aviso a la consulta SQL ($7)
+    let slug;
+    if (slugPedido && String(slugPedido).trim()) {
+      slug = slugify(slugPedido);
+      const taken = await db.query('SELECT id FROM negocios WHERE slug = $1', [slug]);
+      if (taken.rows.length > 0) {
+        return res.status(400).json({ error: 'Ese enlace ya está en uso. Probá con otro.' });
+      }
+    } else {
+      slug = await elegirSlugUnico(db, nombre);
+    }
+
     const query = `
-      INSERT INTO negocios (nombre, email, password, hora_apertura, hora_cierre, duracion_turno_minutos, telefono_aviso)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING id, nombre, email;
+      INSERT INTO negocios (nombre, email, password, hora_apertura, hora_cierre, duracion_turno_minutos, telefono_aviso, slug, direccion)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING id, nombre, email, slug;
     `;
-    
-    // 3. Le pasamos el valor (y si no lo mandan, le ponemos un '0' de relleno para que la BD no chille)
+
     const valores = [
-      nombre, 
-      email, 
-      passwordEncriptada, 
-      hora_apertura || '09:00', 
-      hora_cierre || '18:00', 
+      nombre,
+      email,
+      passwordEncriptada,
+      hora_apertura || '09:00',
+      hora_cierre || '18:00',
       duracion_turno_minutos || 30,
-      telefono_aviso || '0'
+      telefono_aviso || '0',
+      slug,
+      direccion || null
     ];
-    
+
     const resultado = await db.query(query, valores);
 
     res.status(201).json({ mensaje: '¡Negocio registrado con éxito!', negocio: resultado.rows[0] });
   } catch (error) {
-    
     console.error('Error en registro:', error);
     res.status(500).json({ error: 'Hubo un error al registrar el negocio (¿el email ya existe?)' });
   }
@@ -82,7 +109,10 @@ app.post('/api/auth/login', async (req, res) => {
 
   try {
     // 1. Buscamos si existe el negocio con ese email
-    const resultado = await db.query('SELECT * FROM negocios WHERE email = $1', [email]);
+    const resultado = await db.query(
+      'SELECT id, nombre, email, password, slug FROM negocios WHERE email = $1',
+      [email]
+    );
     const negocio = resultado.rows[0];
 
     if (!negocio) {
@@ -104,7 +134,8 @@ app.post('/api/auth/login', async (req, res) => {
       mensaje: 'Login exitoso',
       token,
       negocio_id: negocio.id,
-      nombre: negocio.nombre
+      nombre: negocio.nombre,
+      slug: negocio.slug
     });
   } catch (error) {
     console.error('Error en login:', error);
@@ -114,6 +145,37 @@ app.post('/api/auth/login', async (req, res) => {
 // Nuestra primera ruta de prueba
 app.get('/api/ping', (req, res) => {
   res.json({ mensaje: '¡El backend del turnero está vivo!' });
+});
+
+// Datos públicos del negocio (página de reservas por slug)
+app.get('/api/public/negocios/:slug', async (req, res) => {
+  const raw = (req.params.slug || '').trim().toLowerCase();
+  if (!raw) {
+    return res.status(400).json({ error: 'Falta el identificador del negocio' });
+  }
+  try {
+    const resultado = await db.query(
+      `SELECT id, nombre, slug, direccion, hora_apertura, hora_cierre, duracion_turno_minutos
+       FROM negocios WHERE slug = $1`,
+      [raw]
+    );
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({ error: 'Negocio no encontrado' });
+    }
+    const row = resultado.rows[0];
+    res.json({
+      id: row.id,
+      nombre: row.nombre,
+      slug: row.slug,
+      direccion: row.direccion,
+      hora_apertura: row.hora_apertura,
+      hora_cierre: row.hora_cierre,
+      duracion_turno_minutos: row.duracion_turno_minutos
+    });
+  } catch (error) {
+    console.error('Error público negocio:', error);
+    res.status(500).json({ error: 'Error al cargar el negocio' });
+  }
 });
 // ==========================================
 //        CATÁLOGO DE SERVICIOS
@@ -176,10 +238,24 @@ app.get('/api/servicios', async (req, res) => {
 app.post('/api/turnos', async (req, res) => {
   const { negocio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id } = req.body;
 
+  const nid = Number(negocio_id);
+  if (!Number.isInteger(nid) || nid < 1) {
+    return res.status(400).json({ error: 'negocio_id inválido' });
+  }
+  if (!fecha_hora || !nombre_cliente) {
+    return res.status(400).json({ error: 'Faltan fecha/hora o nombre del cliente' });
+  }
+
   try {
-    // 1. Buscamos el nombre del negocio (Para el Mail y el WhatsApp dinámico)
-    const resNegocio = await db.query('SELECT nombre FROM negocios WHERE id = $1', [negocio_id]);
-    const nombreNegocio = resNegocio.rows.length > 0 ? resNegocio.rows[0].nombre : 'Nuestro Local';
+    const resNegocio = await db.query(
+      'SELECT nombre, direccion FROM negocios WHERE id = $1',
+      [nid]
+    );
+    if (resNegocio.rows.length === 0) {
+      return res.status(404).json({ error: 'Negocio no encontrado' });
+    }
+    const nombreNegocio = resNegocio.rows[0].nombre;
+    const direccionNegocio = resNegocio.rows[0].direccion;
 
     // 2. Buscamos el precio del servicio elegido (si es que eligió uno)
     let precioFinal = 0;
@@ -196,7 +272,7 @@ app.post('/api/turnos', async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pendiente') 
       RETURNING *;
     `;
-    const valores = [negocio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precioFinal];
+    const valores = [nid, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precioFinal];
     const resultado = await db.query(query, valores);
 
     // 4. --- MAGIA DE MAILS ---
@@ -226,8 +302,10 @@ app.post('/api/turnos', async (req, res) => {
     if (email_cliente) {
       console.log('¡Turno guardado! Intentando mandar mail en segundo plano a:', email_cliente);
       // Fíjate que le sacamos el "await" del principio y le agregamos el ".catch" al final
-      enviarMailConfirmacion(email_cliente, nombre_cliente, fecha_hora, nombreNegocio)
-        .catch(err => console.log('⚠️ Aviso: El correo dio timeout por bloqueo de Render (Modo MVP).'));
+      enviarMailConfirmacion(email_cliente, nombre_cliente, fecha_hora, nombreNegocio, {
+        turnoId: resultado.rows[0].id,
+        direccion: direccionNegocio
+      }).catch(() => console.log('⚠️ Aviso: no se pudo enviar el correo de confirmación.'));
     } else {
       console.log('⚠️ ALERTA: email_cliente llegó vacío, se cancela el envío.');
     }
@@ -276,7 +354,7 @@ app.put('/api/turnos/:id/cancelar', verificarToken, async (req, res) => {
       SET estado = 'cancelado' 
       FROM negocios n
       WHERE t.id = $1 AND t.negocio_id = n.id AND t.negocio_id = $2
-      RETURNING t.nombre_cliente, t.email_cliente, t.fecha_hora, n.nombre as nombre_negocio;
+      RETURNING t.nombre_cliente, t.email_cliente, t.fecha_hora, n.nombre as nombre_negocio, n.direccion as direccion_negocio;
     `;
     
     const resultado = await db.query(query, [turno_id, negocio_id]);
@@ -289,10 +367,11 @@ app.put('/api/turnos/:id/cancelar', verificarToken, async (req, res) => {
 
     if (infoTurno.email_cliente) {
         enviarMailCancelacion(
-            infoTurno.email_cliente, 
-            infoTurno.nombre_cliente, 
-            infoTurno.fecha_hora, 
-            infoTurno.nombre_negocio
+            infoTurno.email_cliente,
+            infoTurno.nombre_cliente,
+            infoTurno.fecha_hora,
+            infoTurno.nombre_negocio,
+            infoTurno.direccion_negocio
         );
     }
 

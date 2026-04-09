@@ -21,6 +21,7 @@ export default function Dashboard() {
         localStorage.removeItem('turnero_token');
         localStorage.removeItem('turnero_negocio_id');
         localStorage.removeItem('turnero_nombre');
+        localStorage.removeItem('turnero_slug');
         navigate('/admin');
         return;
       }
@@ -34,6 +35,8 @@ export default function Dashboard() {
     }
   }, [navigate]);
 
+  const slugPublico = typeof window !== 'undefined' ? localStorage.getItem('turnero_slug') : null;
+
   useEffect(() => {
     setNombreNegocio(localStorage.getItem('turnero_nombre') || 'Tu negocio');
     cargarTurnos();
@@ -43,8 +46,14 @@ export default function Dashboard() {
     localStorage.removeItem('turnero_token');
     localStorage.removeItem('turnero_negocio_id');
     localStorage.removeItem('turnero_nombre');
+    localStorage.removeItem('turnero_slug');
     navigate('/admin');
   };
+
+  const linkReservas =
+    slugPublico && typeof window !== 'undefined'
+      ? `${window.location.origin}/reservar/${encodeURIComponent(slugPublico)}`
+      : null;
 
   const cancelarTurno = async (id) => {
     if (!window.confirm('¿Cancelar este turno? Se enviará un mail al cliente si tiene email.')) return;
@@ -73,10 +82,18 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
-      <div className="max-w-6xl mx-auto flex justify-between items-center mb-8">
+      <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-8">
         <div>
           <h1 className="text-3xl font-bold text-gray-800">Panel de control</h1>
           <p className="text-gray-500">{nombreNegocio}</p>
+          {linkReservas && (
+            <p className="text-sm text-green-700 mt-2 break-all">
+              Link público:{' '}
+              <a href={linkReservas} className="font-semibold underline" target="_blank" rel="noreferrer">
+                {linkReservas}
+              </a>
+            </p>
+          )}
         </div>
         <button
           type="button"

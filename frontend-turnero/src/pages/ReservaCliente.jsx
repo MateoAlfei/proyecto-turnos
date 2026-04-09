@@ -1,48 +1,73 @@
 import { useState, useEffect } from 'react';
-import { API_BASE, NEGOCIO_PUBLICO_ID } from '../config';
+import { Link, useParams } from 'react-router-dom';
+import { API_BASE } from '../config';
 
 export default function ReservaCliente() {
+  const { slug } = useParams();
+  const [negocio, setNegocio] = useState(null);
+  const [errorNegocio, setErrorNegocio] = useState(false);
   const [servicios, setServicios] = useState([]);
   const [cargandoServicios, setCargandoServicios] = useState(true);
-  
-  // Memoria del cliente
+
   const [servicioSeleccionado, setServicioSeleccionado] = useState(null);
   const [datosCliente, setDatosCliente] = useState({ nombre: '', email: '', whatsapp: '' });
-  
-  // Memoria de fechas (Dinámico)
-  const [fechaElegida, setFechaElegida] = useState(''); 
-  const [horariosDisponibles, setHorariosDisponibles] = useState([]); 
-  const [horaSeleccionada, setHoraSeleccionada] = useState(null); 
+
+  const [fechaElegida, setFechaElegida] = useState('');
+  const [horariosDisponibles, setHorariosDisponibles] = useState([]);
+  const [horaSeleccionada, setHoraSeleccionada] = useState(null);
   const [cargandoHorarios, setCargandoHorarios] = useState(false);
   const [enviando, setEnviando] = useState(false);
 
-  // 1. Al entrar, traemos los servicios
   useEffect(() => {
-    fetch(`${API_BASE}/api/servicios?negocio_id=${NEGOCIO_PUBLICO_ID}`)
+    if (!slug) return;
+    setErrorNegocio(false);
+    setNegocio(null);
+    fetch(`${API_BASE}/api/public/negocios/${encodeURIComponent(slug)}`)
+      .then((res) => {
+        if (!res.ok) throw new Error('notfound');
+        return res.json();
+      })
+      .then(setNegocio)
+      .catch(() => setErrorNegocio(true));
+  }, [slug]);
+
+  useEffect(() => {
+    if (!negocio?.id) {
+      setServicios([]);
+      setCargandoServicios(false);
+      return;
+    }
+    setCargandoServicios(true);
+    fetch(`${API_BASE}/api/servicios?negocio_id=${negocio.id}`)
       .then((res) => res.json())
       .then((datos) => {
-        setServicios(datos);
+        setServicios(Array.isArray(datos) ? datos : []);
         setCargandoServicios(false);
       })
-      .catch((error) => console.error("Error:", error));
-  }, []);
+      .catch(() => {
+        setServicios([]);
+        setCargandoServicios(false);
+      });
+  }, [negocio?.id]);
 
-  // 2. EFECTO MÁGICO: Cuando el cliente elige una fecha en el input nativo
   const handleFechaChange = (e) => {
-    const nuevaFecha = e.target.value; // Formato YYYY-MM-DD
+    const nuevaFecha = e.target.value;
     setFechaElegida(nuevaFecha);
-    setHoraSeleccionada(null); // Reseteamos la hora si cambia de día
+    setHoraSeleccionada(null);
+    if (!negocio?.id || !nuevaFecha) return;
     setCargandoHorarios(true);
-    
-    fetch(`${API_BASE}/api/turnos/disponibles?negocio_id=${NEGOCIO_PUBLICO_ID}&fecha=${nuevaFecha}`)
+
+    fetch(
+      `${API_BASE}/api/turnos/disponibles?negocio_id=${negocio.id}&fecha=${nuevaFecha}`
+    )
       .then((res) => res.json())
       .then((datos) => {
         const lista = Array.isArray(datos.disponibles) ? datos.disponibles : [];
         setHorariosDisponibles(lista);
         setCargandoHorarios(false);
       })
-      .catch((error) => {
-        console.error("Error trayendo horarios:", error);
+      .catch(() => {
+        setHorariosDisponibles([]);
         setCargandoHorarios(false);
       });
   };
@@ -51,21 +76,20 @@ export default function ReservaCliente() {
     setDatosCliente({ ...datosCliente, [e.target.name]: e.target.value });
   };
 
-  // Función para que no puedan elegir días del pasado
   const obtenerFechaMinima = () => {
     const hoy = new Date();
     hoy.setMinutes(hoy.getMinutes() - hoy.getTimezoneOffset());
-    return hoy.toISOString().split('T')[0]; // Devuelve solo "YYYY-MM-DD"
+    return hoy.toISOString().split('T')[0];
   };
 
   const intentarReservar = async () => {
-    setEnviando(true); 
+    if (!negocio?.id) return;
+    setEnviando(true);
 
-    // Unimos la fecha y la hora elegida
     const fechaHoraFinal = `${fechaElegida} ${horaSeleccionada}`;
 
     const turnoNuevo = {
-      negocio_id: Number(NEGOCIO_PUBLICO_ID),
+      negocio_id: negocio.id,
       servicio_id: servicioSeleccionado,
       fecha_hora: fechaHoraFinal,
       nombre_cliente: datosCliente.nombre,
@@ -81,38 +105,67 @@ export default function ReservaCliente() {
       });
 
       if (respuesta.status === 201) {
-        alert("¡Turno guardado con éxito! 🎉");
-        window.location.reload(); 
+        alert('¡Turno guardado con éxito!');
+        window.location.reload();
       } else {
-        alert("Hubo un problema al guardar el turno.");
+        const err = await respuesta.json().catch(() => ({}));
+        alert(err.error || 'No se pudo guardar el turno.');
       }
-    } catch (error) {
-      alert("Error de conexión.");
+    } catch {
+      alert('Error de conexión.');
     } finally {
       setEnviando(false);
     }
   };
 
+  if (errorNegocio) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 text-center">
+        <h1 className="text-xl font-bold text-gray-800 mb-2">No encontramos este negocio</h1>
+        <p className="text-gray-500 mb-6">Revisá el enlace o pedile al dueño la URL correcta.</p>
+        <Link to="/" className="text-green-700 font-semibold hover:underline">
+          Volver al inicio
+        </Link>
+      </div>
+    );
+  }
+
+  if (!negocio) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <p className="text-gray-500 animate-pulse">Cargando…</p>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 py-10 px-4">
       <div className="max-w-4xl mx-auto bg-white p-6 sm:p-8 rounded-2xl shadow-lg border border-gray-100">
-        
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-800 mb-2">Peluquería Raineri ✂️</h1>
-          <p className="text-gray-500">Reservá tu turno online en segundos</p>
+          <h1 className="text-3xl font-bold text-gray-800 mb-2">{negocio.nombre}</h1>
+          <p className="text-gray-500">Reservá tu turno online</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-          
-          {/* COLUMNA IZQUIERDA: Servicio y Datos */}
           <div>
             <h2 className="text-xl font-bold text-gray-700 mb-4">1. Elegí un servicio</h2>
-            {cargandoServicios ? <p className="animate-pulse">Cargando...</p> : (
+            {cargandoServicios ? (
+              <p className="animate-pulse text-gray-500">Cargando…</p>
+            ) : servicios.length === 0 ? (
+              <p className="text-amber-800 bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm">
+                Este local todavía no cargó servicios. Volvé más tarde o contactá al negocio.
+              </p>
+            ) : (
               <div className="grid grid-cols-1 gap-3 mb-8">
                 {servicios.map((servicio) => (
-                  <div 
-                    key={servicio.id} onClick={() => setServicioSeleccionado(servicio.id)}
-                    className={`border-2 rounded-xl p-4 cursor-pointer transition-colors ${servicioSeleccionado === servicio.id ? 'border-blue-600 bg-blue-50' : 'border-gray-100 hover:border-blue-300'}`}
+                  <div
+                    key={servicio.id}
+                    onClick={() => setServicioSeleccionado(servicio.id)}
+                    className={`border-2 rounded-xl p-4 cursor-pointer transition-colors ${
+                      servicioSeleccionado === servicio.id
+                        ? 'border-blue-600 bg-blue-50'
+                        : 'border-gray-100 hover:border-blue-300'
+                    }`}
                   >
                     <h3 className="font-bold text-gray-700">{servicio.nombre}</h3>
                     <p className="font-medium mt-1 text-gray-500">${servicio.precio}</p>
@@ -123,42 +176,63 @@ export default function ReservaCliente() {
 
             <h2 className="text-xl font-bold text-gray-700 mb-4">2. Tus datos</h2>
             <div className="space-y-3">
-              <input type="text" name="nombre" placeholder="Tu Nombre" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
-              <input type="email" name="email" placeholder="Tu Email" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
-              <input type="tel" name="whatsapp" placeholder="Tu WhatsApp (Ej: 549351...)" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
+              <input
+                type="text"
+                name="nombre"
+                placeholder="Tu nombre"
+                onChange={handleInputChange}
+                className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none"
+              />
+              <input
+                type="email"
+                name="email"
+                placeholder="Tu email"
+                onChange={handleInputChange}
+                className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none"
+              />
+              <input
+                type="tel"
+                name="whatsapp"
+                placeholder="WhatsApp (ej. 549351...)"
+                onChange={handleInputChange}
+                className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none"
+              />
             </div>
           </div>
 
-          {/* COLUMNA DERECHA: Calendario Nativo y Horarios */}
           <div>
-            <h2 className="text-xl font-bold text-gray-700 mb-4">3. Elegí fecha y hora</h2>
-            
-            {/* Calendario Nativo de HTML (A prueba de balas) */}
-            <input 
-              type="date" 
-              min={obtenerFechaMinima()} 
+            <h2 className="text-xl font-bold text-gray-700 mb-4">3. Fecha y hora</h2>
+            <input
+              type="date"
+              min={obtenerFechaMinima()}
               onChange={handleFechaChange}
               className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none text-gray-700 mb-6 cursor-pointer"
             />
 
-            {/* Grilla de Horarios Dinámica */}
             {fechaElegida && (
               <div>
                 <h3 className="font-bold text-gray-700 mb-3 text-center">
-                  Horarios para el {fechaElegida.split('-').reverse().join('/')}
+                  Horarios el {fechaElegida.split('-').reverse().join('/')}
                 </h3>
-                
+
                 {cargandoHorarios ? (
-                  <p className="text-center text-gray-500 animate-pulse">Buscando disponibilidad...</p>
+                  <p className="text-center text-gray-500 animate-pulse">Buscando disponibilidad…</p>
                 ) : horariosDisponibles.length === 0 ? (
-                  <p className="text-center text-red-500 font-bold bg-red-50 p-3 rounded-xl">No hay turnos disponibles 😢</p>
+                  <p className="text-center text-red-500 font-bold bg-red-50 p-3 rounded-xl">
+                    No hay turnos disponibles ese día
+                  </p>
                 ) : (
                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                     {horariosDisponibles.map((hora) => (
                       <button
                         key={hora}
+                        type="button"
                         onClick={() => setHoraSeleccionada(hora)}
-                        className={`py-2 rounded-lg font-bold transition-all ${horaSeleccionada === hora ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                        className={`py-2 rounded-lg font-bold transition-all ${
+                          horaSeleccionada === hora
+                            ? 'bg-blue-600 text-white shadow-md'
+                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}
                       >
                         {hora}
                       </button>
@@ -168,18 +242,23 @@ export default function ReservaCliente() {
               </div>
             )}
           </div>
-
         </div>
 
-        {/* Botón Final */}
-        <button 
+        <button
+          type="button"
           onClick={intentarReservar}
-          disabled={!servicioSeleccionado || !datosCliente.nombre || !fechaElegida || !horaSeleccionada || enviando}
+          disabled={
+            !servicioSeleccionado ||
+            !datosCliente.nombre ||
+            !fechaElegida ||
+            !horaSeleccionada ||
+            enviando ||
+            servicios.length === 0
+          }
           className="w-full bg-gray-900 text-white text-lg font-bold py-4 rounded-xl mt-8 hover:bg-black transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
-          {enviando ? 'Procesando turno...' : 'Confirmar Turno'}
+          {enviando ? 'Procesando…' : 'Confirmar turno'}
         </button>
-
       </div>
     </div>
   );
