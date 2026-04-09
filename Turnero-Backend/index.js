@@ -183,6 +183,127 @@ app.get('/api/public/negocios/:slug', async (req, res) => {
     res.status(500).json({ error: 'Error al cargar el negocio' });
   }
 });
+
+function formatHoraSalida(val) {
+  if (val == null) return null;
+  const s = String(val);
+  return s.length >= 5 ? s.slice(0, 5) : s;
+}
+
+function normalizarHoraInput(h) {
+  const [a, b] = String(h).trim().split(':');
+  const hh = Number(a);
+  const mm = Number(b);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm) || mm < 0 || mm > 59 || hh < 0 || hh > 23) {
+    return null;
+  }
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+// Perfil del negocio (dueño logueado)
+app.get('/api/negocio/perfil', verificarToken, async (req, res) => {
+  try {
+    const resultado = await db.query(
+      `SELECT id, nombre, slug, email, direccion, hora_apertura, hora_cierre, duracion_turno_minutos, telefono_aviso
+       FROM negocios WHERE id = $1`,
+      [req.negocioLogueado.id]
+    );
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({ error: 'Negocio no encontrado' });
+    }
+    const row = resultado.rows[0];
+    res.json({
+      id: row.id,
+      nombre: row.nombre,
+      slug: row.slug,
+      email: row.email,
+      direccion: row.direccion,
+      hora_apertura: formatHoraSalida(row.hora_apertura),
+      hora_cierre: formatHoraSalida(row.hora_cierre),
+      duracion_turno_minutos: row.duracion_turno_minutos,
+      telefono_aviso: row.telefono_aviso
+    });
+  } catch (error) {
+    console.error('Error perfil negocio:', error);
+    res.status(500).json({ error: 'Error al cargar el perfil' });
+  }
+});
+
+app.put('/api/negocio/perfil', verificarToken, async (req, res) => {
+  const id = req.negocioLogueado.id;
+  const p = req.body || {};
+  const campos = [];
+  const valores = [];
+  let idx = 1;
+
+  const agregar = (col, val) => {
+    campos.push(`${col} = $${idx++}`);
+    valores.push(val);
+  };
+
+  if (p.nombre !== undefined) {
+    const n = String(p.nombre).trim();
+    if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío' });
+    agregar('nombre', n);
+  }
+  if (p.direccion !== undefined) {
+    agregar('direccion', p.direccion === '' || p.direccion == null ? null : String(p.direccion).trim());
+  }
+  if (p.hora_apertura !== undefined) {
+    const norm = normalizarHoraInput(p.hora_apertura);
+    if (!norm) return res.status(400).json({ error: 'hora_apertura inválida (usá HH:MM, 24 h)' });
+    agregar('hora_apertura', norm);
+  }
+  if (p.hora_cierre !== undefined) {
+    const norm = normalizarHoraInput(p.hora_cierre);
+    if (!norm) return res.status(400).json({ error: 'hora_cierre inválida (usá HH:MM, 24 h)' });
+    agregar('hora_cierre', norm);
+  }
+  if (p.duracion_turno_minutos !== undefined) {
+    const d = Number(p.duracion_turno_minutos);
+    if (!Number.isInteger(d) || d < 5 || d > 480) {
+      return res.status(400).json({ error: 'duracion_turno_minutos debe ser un entero entre 5 y 480' });
+    }
+    agregar('duracion_turno_minutos', d);
+  }
+  if (p.telefono_aviso !== undefined) {
+    agregar('telefono_aviso', String(p.telefono_aviso).trim() || '0');
+  }
+
+  if (campos.length === 0) {
+    return res.status(400).json({ error: 'No hay datos para actualizar' });
+  }
+
+  valores.push(id);
+
+  try {
+    await db.query(`UPDATE negocios SET ${campos.join(', ')} WHERE id = $${idx}`, valores);
+    const resultado = await db.query(
+      `SELECT id, nombre, slug, email, direccion, hora_apertura, hora_cierre, duracion_turno_minutos, telefono_aviso
+       FROM negocios WHERE id = $1`,
+      [id]
+    );
+    const row = resultado.rows[0];
+    res.json({
+      mensaje: 'Perfil actualizado',
+      perfil: {
+        id: row.id,
+        nombre: row.nombre,
+        slug: row.slug,
+        email: row.email,
+        direccion: row.direccion,
+        hora_apertura: formatHoraSalida(row.hora_apertura),
+        hora_cierre: formatHoraSalida(row.hora_cierre),
+        duracion_turno_minutos: row.duracion_turno_minutos,
+        telefono_aviso: row.telefono_aviso
+      }
+    });
+  } catch (error) {
+    console.error('Error actualizando perfil:', error);
+    res.status(500).json({ error: 'No se pudo guardar el perfil' });
+  }
+});
+
 // ==========================================
 //        CATÁLOGO DE SERVICIOS
 // ==========================================

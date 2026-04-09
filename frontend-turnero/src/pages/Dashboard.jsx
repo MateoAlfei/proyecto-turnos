@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE, getAuthHeaders } from '../config';
+import { exportarAgendaCsv } from '../csvExport';
 
 const MESES = [
   { v: '1', l: 'Enero' },
@@ -108,6 +109,17 @@ export default function Dashboard() {
   const [metricas, setMetricas] = useState(null);
   const [retencion, setRetencion] = useState(null);
   const [cargandoMetricas, setCargandoMetricas] = useState(false);
+  const [perfilForm, setPerfilForm] = useState({
+    nombre: '',
+    direccion: '',
+    telefono_aviso: '',
+    hora_apertura: '09:00',
+    hora_cierre: '18:00',
+    duracion_turno_minutos: 30
+  });
+  const [emailNegocio, setEmailNegocio] = useState('');
+  const [perfilCargando, setPerfilCargando] = useState(true);
+  const [perfilGuardando, setPerfilGuardando] = useState(false);
   const navigate = useNavigate();
 
   const turnosVisibles = useMemo(
@@ -158,6 +170,30 @@ export default function Dashboard() {
     }
   }, []);
 
+  const cargarPerfil = useCallback(async () => {
+    const token = localStorage.getItem('turnero_token');
+    if (!token) return;
+    setPerfilCargando(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/negocio/perfil`, { headers: getAuthHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      setEmailNegocio(data.email || '');
+      setPerfilForm({
+        nombre: data.nombre || '',
+        direccion: data.direccion || '',
+        telefono_aviso: data.telefono_aviso === '0' ? '' : data.telefono_aviso || '',
+        hora_apertura: (data.hora_apertura || '09:00').toString().slice(0, 5),
+        hora_cierre: (data.hora_cierre || '18:00').toString().slice(0, 5),
+        duracion_turno_minutos: data.duracion_turno_minutos ?? 30
+      });
+    } catch {
+      /* silencioso */
+    } finally {
+      setPerfilCargando(false);
+    }
+  }, []);
+
   const cargarInsights = useCallback(async () => {
     const token = localStorage.getItem('turnero_token');
     if (!token) return;
@@ -186,7 +222,8 @@ export default function Dashboard() {
     setNombreNegocio(localStorage.getItem('turnero_nombre') || 'Tu negocio');
     cargarTurnos();
     cargarServicios();
-  }, [cargarTurnos, cargarServicios]);
+    cargarPerfil();
+  }, [cargarTurnos, cargarServicios, cargarPerfil]);
 
   useEffect(() => {
     cargarInsights();
@@ -276,6 +313,47 @@ export default function Dashboard() {
     } finally {
       setGuardandoServicio(false);
     }
+  };
+
+  const guardarPerfil = async (e) => {
+    e.preventDefault();
+    setPerfilGuardando(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/negocio/perfil`, {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          nombre: perfilForm.nombre.trim(),
+          direccion: perfilForm.direccion.trim(),
+          telefono_aviso: perfilForm.telefono_aviso.trim() || '0',
+          hora_apertura: perfilForm.hora_apertura,
+          hora_cierre: perfilForm.hora_cierre,
+          duracion_turno_minutos: Number(perfilForm.duracion_turno_minutos)
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'No se pudo guardar');
+        return;
+      }
+      if (data.perfil?.nombre) {
+        localStorage.setItem('turnero_nombre', data.perfil.nombre);
+        setNombreNegocio(data.perfil.nombre);
+      }
+      alert('Datos del negocio guardados');
+    } catch {
+      alert('Error de conexión');
+    } finally {
+      setPerfilGuardando(false);
+    }
+  };
+
+  const exportarCsv = () => {
+    if (!turnosVisibles.length) {
+      alert('No hay turnos en esta vista para exportar');
+      return;
+    }
+    exportarAgendaCsv(turnosVisibles, filtroAgenda);
   };
 
   const eliminarServicio = async (id) => {
@@ -460,6 +538,13 @@ export default function Dashboard() {
                   ? `${turnosVisibles.length} en vista · ${turnos.length} total`
                   : `${turnosVisibles.length} turnos`}
               </span>
+              <button
+                type="button"
+                onClick={exportarCsv}
+                className="text-sm font-bold text-slate-700 border-2 border-slate-200 bg-white px-3 py-2 rounded-lg hover:bg-slate-50"
+              >
+                Exportar CSV
+              </button>
             </div>
           </div>
 
@@ -632,6 +717,104 @@ export default function Dashboard() {
                   </li>
                 ))}
               </ul>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="p-6 border-b border-gray-200 bg-gray-50">
+            <h2 className="text-xl font-bold text-gray-700">Mi negocio</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Nombre, dirección (sale en mails), horarios de la grilla de reservas y WhatsApp de avisos.
+            </p>
+          </div>
+          <div className="p-6">
+            {perfilCargando ? (
+              <p className="text-gray-400 text-sm animate-pulse">Cargando…</p>
+            ) : (
+              <form onSubmit={guardarPerfil} className="space-y-4 max-w-xl">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nombre del local</label>
+                  <input
+                    type="text"
+                    value={perfilForm.nombre}
+                    onChange={(e) => setPerfilForm({ ...perfilForm, nombre: e.target.value })}
+                    required
+                    className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Email de acceso</label>
+                  <input
+                    type="email"
+                    value={emailNegocio}
+                    disabled
+                    className="w-full border-2 border-gray-100 rounded-xl px-4 py-3 bg-gray-50 text-gray-500 cursor-not-allowed"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Solo lectura.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Dirección</label>
+                  <input
+                    type="text"
+                    value={perfilForm.direccion}
+                    onChange={(e) => setPerfilForm({ ...perfilForm, direccion: e.target.value })}
+                    placeholder="Calle, ciudad"
+                    className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">WhatsApp del local</label>
+                  <input
+                    type="tel"
+                    value={perfilForm.telefono_aviso}
+                    onChange={(e) => setPerfilForm({ ...perfilForm, telefono_aviso: e.target.value })}
+                    placeholder="54911…"
+                    className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Apertura</label>
+                    <input
+                      type="time"
+                      value={perfilForm.hora_apertura}
+                      onChange={(e) => setPerfilForm({ ...perfilForm, hora_apertura: e.target.value })}
+                      className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Cierre</label>
+                    <input
+                      type="time"
+                      value={perfilForm.hora_cierre}
+                      onChange={(e) => setPerfilForm({ ...perfilForm, hora_cierre: e.target.value })}
+                      className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Duración turno (min)</label>
+                    <input
+                      type="number"
+                      min={5}
+                      max={480}
+                      step={5}
+                      value={perfilForm.duracion_turno_minutos}
+                      onChange={(e) =>
+                        setPerfilForm({ ...perfilForm, duracion_turno_minutos: Number(e.target.value) })
+                      }
+                      className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  disabled={perfilGuardando}
+                  className="bg-gray-900 text-white font-bold px-6 py-3 rounded-xl hover:bg-black disabled:bg-gray-400"
+                >
+                  {perfilGuardando ? 'Guardando…' : 'Guardar cambios'}
+                </button>
+              </form>
             )}
           </div>
         </div>
