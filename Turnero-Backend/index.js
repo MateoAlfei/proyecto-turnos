@@ -18,6 +18,30 @@ app.use(express.json()); // Permite que el servidor entienda datos en formato JS
 //        SISTEMA DE AUTENTICACIÓN
 // ==========================================
 
+// === CALCULADORA DINÁMICA DE TURNOS ===
+// Le pasás (09:00, 20:00, 30) y te devuelve ["09:00", "09:30", "10:00"...]
+function generarGrillaHoraria(apertura, cierre, intervaloMinutos) {
+  const turnos = [];
+  
+  // Convertimos las horas a minutos totales para que sea fácil sumar (ej: 09:00 -> 540 minutos)
+  let [horaA, minA] = apertura.split(':').map(Number);
+  let minutosActuales = (horaA * 60) + minA;
+  
+  let [horaC, minC] = cierre.split(':').map(Number);
+  let minutosCierre = (horaC * 60) + minC;
+
+  // Mientras el turno actual + lo que dura el turno no se pase de la hora de cierre
+  while ((minutosActuales + intervaloMinutos) <= minutosCierre) {
+    let h = Math.floor(minutosActuales / 60).toString().padStart(2, '0');
+    let m = (minutosActuales % 60).toString().padStart(2, '0');
+    
+    turnos.push(`${h}:${m}`);
+    minutosActuales += intervaloMinutos; // Avanzamos al siguiente turno
+  }
+  
+  return turnos;
+}
+
 // Ruta para REGISTRAR un nuevo negocio (Onboarding)
 app.post('/api/auth/registro', async (req, res) => {
   // 1. Agregamos telefono_aviso a lo que recibimos del Frontend
@@ -241,6 +265,55 @@ app.get('/api/turnos', async (req, res) => {
     res.status(500).json({ error: 'Hubo un problema al consultar la base de datos' });
   }
 });
+
+
+// ==========================================
+// RUTA PARA EL CLIENTE: OBTENER DISPONIBILIDAD DINÁMICA
+// ==========================================
+app.get('/api/turnos-disponibles', async (req, res) => {
+  try {
+    const { negocio_id, fecha } = req.query;
+
+    if (!negocio_id || !fecha) {
+      return res.status(400).json({ error: 'Faltan datos (negocio_id o fecha)' });
+    }
+
+    // 1. TRAER REGLAS DEL NEGOCIO: Vamos a la BD a ver cómo trabaja este local en particular
+    const queryConfig = `SELECT hora_apertura, hora_cierre, duracion_turno_minutos FROM negocios_config WHERE negocio_id = $1`;
+    const resultadoConfig = await pool.query(queryConfig, [negocio_id]);
+    
+    if (resultadoConfig.rows.length === 0) {
+      return res.status(404).json({ error: 'Configuración del negocio no encontrada' });
+    }
+
+    const reglas = resultadoConfig.rows[0];
+
+    // 2. EL REGLAMENTO DINÁMICO: Usamos nuestra calculadora
+    // (Acomodamos el formato de la hora que devuelve Postgres cortando los segundos)
+    const apertura = reglas.hora_apertura.substring(0, 5); 
+    const cierre = reglas.hora_cierre.substring(0, 5);
+    
+    const turnosPosibles = generarGrillaHoraria(apertura, cierre, reglas.duracion_turno_minutos);
+
+    // 3. BUSCAMOS LOS OCUPADOS:
+    const queryTurnos = `SELECT fecha_hora FROM turnos WHERE negocio_id = $1 AND fecha_hora LIKE $2`;
+    const resultadoTurnos = await pool.query(queryTurnos, [negocio_id, `${fecha}%`]);
+
+    const turnosOcupados = resultadoTurnos.rows.map(turno => {
+      return turno.fecha_hora.split(' ')[1].substring(0, 5); 
+    });
+
+    // 4. LA LIMPIEZA FINAL:
+    const turnosDisponibles = turnosPosibles.filter(hora => !turnosOcupados.includes(hora));
+
+    res.status(200).json(turnosDisponibles);
+
+  } catch (error) {
+    console.error('ERROR CALCULANDO DISPONIBILIDAD:', error);
+    res.status(500).json({ error: 'Hubo un problema al calcular los turnos' });
+  }
+});
+
 // ==========================================
 //    RUTA PARA CANCELAR UN TURNO 
 // ==========================================
