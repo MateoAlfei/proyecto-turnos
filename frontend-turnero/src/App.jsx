@@ -1,8 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import ReservaCliente from './pages/ReservaCliente';
-import Dashboard from './pages/Dashboard'; // <-- Importamos la página nueva
-
-const PantallaLogin = () => <h1>Acceso para Dueños 🔐 (Lo armamos después)</h1>;
+import Dashboard from './pages/Dashboard';
+import Login from './pages/Login';
 
 function App() {
   return (
@@ -10,7 +9,7 @@ function App() {
       <Routes>
         <Route path="/" element={<ReservaCliente />} />
         
-        <Route path="/admin" element={<PantallaLogin />} />
+        <Route path="/admin" element={<Login />} />
         
         {/* Cambiamos el texto de prueba por nuestra página real */}
         <Route path="/admin/dashboard" element={<Dashboard />} />

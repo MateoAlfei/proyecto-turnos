@@ -5,9 +5,7 @@ const db = require('./db'); // Importamos la conexión a la base de datos que hi
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { verificarToken } = require('./middleware');
-
-// La firma secreta de tus llaves (en un proyecto real esto se oculta en un archivo .env)
-const JWT_SECRET = process.env.JWT_SECRET;
+const { JWT_SECRET } = require('./jwtSecret');
 const PORT = process.env.PORT || 3000;
 const app = express();
 const { enviarMailConfirmacion, enviarMailCancelacion } = require('./email');
@@ -102,7 +100,12 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign({ id: negocio.id, nombre: negocio.nombre }, JWT_SECRET, { expiresIn: '8h' });
 
     // Le devolvemos el token al Frontend para que lo guarde
-    res.json({ mensaje: 'Login exitoso', token, negocio_id: negocio.id });
+    res.json({
+      mensaje: 'Login exitoso',
+      token,
+      negocio_id: negocio.id,
+      nombre: negocio.nombre
+    });
   } catch (error) {
     console.error('Error en login:', error);
     res.status(500).json({ error: 'Hubo un error en el servidor' });
@@ -237,18 +240,12 @@ app.post('/api/turnos', async (req, res) => {
 
 
 // ==========================================
-// RUTA PARA EL DASHBOARD: OBTENER TURNOS
+// RUTA PARA EL DASHBOARD: OBTENER TURNOS (solo el negocio del token)
 // ==========================================
-app.get('/api/turnos', async (req, res) => {
+app.get('/api/turnos', verificarToken, async (req, res) => {
   try {
-    const { negocio_id } = req.query;
+    const negocio_id = req.negocioLogueado.id;
 
-    if (!negocio_id) {
-      return res.status(400).json({ error: 'Falta enviar el negocio_id' });
-    }
-
-    // Buscamos en la base de datos todos los turnos de este negocio
-    // y los ordenamos para que los más recientes salgan primero.
     const query = `
       SELECT id, servicio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente
       FROM turnos
@@ -257,7 +254,6 @@ app.get('/api/turnos', async (req, res) => {
     `;
     const resultado = await db.query(query, [negocio_id]);
 
-    // Le devolvemos la lista completa al Frontend
     res.status(200).json(resultado.rows);
 
   } catch (error) {
@@ -266,80 +262,31 @@ app.get('/api/turnos', async (req, res) => {
   }
 });
 
-
-// ==========================================
-// RUTA PARA EL CLIENTE: OBTENER DISPONIBILIDAD DINÁMICA
-// ==========================================
-app.get('/api/turnos-disponibles', async (req, res) => {
-  try {
-    const { negocio_id, fecha } = req.query;
-
-    if (!negocio_id || !fecha) {
-      return res.status(400).json({ error: 'Faltan datos (negocio_id o fecha)' });
-    }
-
-    // 1. TRAER REGLAS DEL NEGOCIO: Vamos a la BD a ver cómo trabaja este local en particular
-    const queryConfig = `SELECT hora_apertura, hora_cierre, duracion_turno_minutos FROM negocios_config WHERE negocio_id = $1`;
-    const resultadoConfig = await pool.query(queryConfig, [negocio_id]);
-    
-    if (resultadoConfig.rows.length === 0) {
-      return res.status(404).json({ error: 'Configuración del negocio no encontrada' });
-    }
-
-    const reglas = resultadoConfig.rows[0];
-
-    // 2. EL REGLAMENTO DINÁMICO: Usamos nuestra calculadora
-    // (Acomodamos el formato de la hora que devuelve Postgres cortando los segundos)
-    const apertura = reglas.hora_apertura.substring(0, 5); 
-    const cierre = reglas.hora_cierre.substring(0, 5);
-    
-    const turnosPosibles = generarGrillaHoraria(apertura, cierre, reglas.duracion_turno_minutos);
-
-    // 3. BUSCAMOS LOS OCUPADOS:
-    const queryTurnos = `SELECT fecha_hora FROM turnos WHERE negocio_id = $1 AND fecha_hora LIKE $2`;
-    const resultadoTurnos = await pool.query(queryTurnos, [negocio_id, `${fecha}%`]);
-
-    const turnosOcupados = resultadoTurnos.rows.map(turno => {
-      return turno.fecha_hora.split(' ')[1].substring(0, 5); 
-    });
-
-    // 4. LA LIMPIEZA FINAL:
-    const turnosDisponibles = turnosPosibles.filter(hora => !turnosOcupados.includes(hora));
-
-    res.status(200).json(turnosDisponibles);
-
-  } catch (error) {
-    console.error('ERROR CALCULANDO DISPONIBILIDAD:', error);
-    res.status(500).json({ error: 'Hubo un problema al calcular los turnos' });
-  }
-});
-
 // ==========================================
 //    RUTA PARA CANCELAR UN TURNO 
 // ==========================================
 // Usamos PUT porque estamos "actualizando" un dato existente, y :id en la URL
-app.put('/api/turnos/:id/cancelar', async (req, res) => {
+app.put('/api/turnos/:id/cancelar', verificarToken, async (req, res) => {
   const turno_id = req.params.id;
+  const negocio_id = req.negocioLogueado.id;
 
   try {
-    // 1. Actualizamos y al mismo tiempo traemos los datos del cliente y el negocio
     const query = `
       UPDATE turnos t
       SET estado = 'cancelado' 
       FROM negocios n
-      WHERE t.id = $1 AND t.negocio_id = n.id
+      WHERE t.id = $1 AND t.negocio_id = n.id AND t.negocio_id = $2
       RETURNING t.nombre_cliente, t.email_cliente, t.fecha_hora, n.nombre as nombre_negocio;
     `;
     
-    const resultado = await db.query(query, [turno_id]);
+    const resultado = await db.query(query, [turno_id, negocio_id]);
 
     if (resultado.rows.length === 0) {
-      return res.status(404).json({ error: 'Turno no encontrado' });
+      return res.status(404).json({ error: 'Turno no encontrado o no pertenece a tu negocio' });
     }
 
     const infoTurno = resultado.rows[0];
 
-    // 2. Disparamos el mail de cancelación
     if (infoTurno.email_cliente) {
         enviarMailCancelacion(
             infoTurno.email_cliente, 
@@ -437,16 +384,14 @@ app.get('/api/turnos/disponibles', async (req, res) => {
 // Ruta protegida con JWT
 app.get('/api/dashboard/metricas', verificarToken, async (req, res) => {
 
-  // Pedimos el negocio, y qué mes/año quiere analizar
-  const { negocio_id, mes, anio } = req.query;
+  const negocio_id = req.negocioLogueado.id;
+  const { mes, anio } = req.query;
 
-  if (!negocio_id || !mes || !anio) {
-    return res.status(400).json({ error: 'Faltan parámetros: negocio_id, mes o anio' });
+  if (!mes || !anio) {
+    return res.status(400).json({ error: 'Faltan parámetros: mes o anio' });
   }
 
   try {
-    // 1. Calculamos la plata: Sumamos el precio de todos los turnos 'completados' de ese mes
-    // Usamos COALESCE para que si no hay turnos, devuelva 0 en vez de 'null'
     const queryFacturacion = `
       SELECT 
         COALESCE(SUM(precio), 0) as total_facturado,
@@ -459,7 +404,6 @@ app.get('/api/dashboard/metricas', verificarToken, async (req, res) => {
     `;
     const valoresFacturacion = [negocio_id, mes, anio];
     
-    // 2. Calculamos los horarios: Agrupamos turnos para ver cuáles son las horas pico y las muertas
     const queryHorarios = `
       SELECT 
         TO_CHAR(fecha_hora, 'HH24:MI') as hora,
@@ -492,14 +436,9 @@ app.get('/api/dashboard/metricas', verificarToken, async (req, res) => {
 });
 // Ruta para el Dashboard: Radar de Retención (Clientes perdidos)
 app.get('/api/dashboard/retencion',verificarToken, async (req, res) => {
-  // Pedimos el negocio y hace cuántos días consideramos que el cliente está "perdido"
-  const { negocio_id, dias_inactividad } = req.query;
+  const negocio_id = req.negocioLogueado.id;
+  const { dias_inactividad } = req.query;
 
-  if (!negocio_id) {
-    return res.status(400).json({ error: 'Falta el parámetro: negocio_id' });
-  }
-
-  // Por defecto, si el frontend no nos manda los días, buscamos los que no vienen hace 30 días
   const limiteDias = dias_inactividad || 30;
 
   try {

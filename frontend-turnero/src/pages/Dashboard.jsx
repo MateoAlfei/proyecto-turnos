@@ -1,59 +1,100 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { API_BASE, getAuthHeaders } from '../config';
 
 export default function Dashboard() {
   const [turnos, setTurnos] = useState([]);
   const [cargando, setCargando] = useState(true);
+  const [nombreNegocio, setNombreNegocio] = useState('');
+  const navigate = useNavigate();
 
-  // Cuando el dueño entra, traemos los turnos de la base de datos
+  const cargarTurnos = useCallback(async () => {
+    const token = localStorage.getItem('turnero_token');
+    if (!token) {
+      navigate('/admin');
+      return;
+    }
+    setCargando(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/turnos`, { headers: getAuthHeaders() });
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem('turnero_token');
+        localStorage.removeItem('turnero_negocio_id');
+        localStorage.removeItem('turnero_nombre');
+        navigate('/admin');
+        return;
+      }
+      const datos = await res.json();
+      if (datos.error) throw new Error(datos.error);
+      setTurnos(Array.isArray(datos) ? datos : []);
+    } catch {
+      setTurnos([]);
+    } finally {
+      setCargando(false);
+    }
+  }, [navigate]);
+
   useEffect(() => {
-    // Nota: Si esta ruta todavía no existe en tu backend, después la creamos, 
-    // por ahora dejamos el molde listo.
-    fetch('https://proyecto-turnos.onrender.com/api/turnos?negocio_id=1')
-      .then((res) => res.json())
-      .then((datos) => {
-        // Si el backend devuelve un error (porque no existe la ruta aún), ponemos un array vacío
-        if (datos.error) throw new Error("Ruta no creada");
-        setTurnos(datos);
-        setCargando(false);
-      })
-      .catch((error) => {
-        console.log("Aviso: Probablemente falta crear la ruta GET /api/turnos en el backend");
-        setTurnos([]); // Dejamos la tabla vacía por ahora
-        setCargando(false);
-      });
-  }, []);
+    setNombreNegocio(localStorage.getItem('turnero_nombre') || 'Tu negocio');
+    cargarTurnos();
+  }, [cargarTurnos]);
 
-  const cancelarTurno = (id) => {
-    if(window.confirm("¿Estás seguro de cancelar este turno?")) {
-      alert(`Acá le pegaríamos a la ruta PUT /api/turnos/${id}/cancelar`);
-      // Lógica de cancelación que conectaremos después
+  const cerrarSesion = () => {
+    localStorage.removeItem('turnero_token');
+    localStorage.removeItem('turnero_negocio_id');
+    localStorage.removeItem('turnero_nombre');
+    navigate('/admin');
+  };
+
+  const cancelarTurno = async (id) => {
+    if (!window.confirm('¿Cancelar este turno? Se enviará un mail al cliente si tiene email.')) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/turnos/${id}/cancelar`, {
+        method: 'PUT',
+        headers: getAuthHeaders()
+      });
+      if (res.status === 401 || res.status === 403) {
+        cerrarSesion();
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'No se pudo cancelar');
+        return;
+      }
+      await cargarTurnos();
+    } catch {
+      alert('Error de conexión');
     }
   };
 
+  const textoWhatsApp = (turno) =>
+    `¡Hola ${turno.nombre_cliente}! 💈\nTe confirmamos tu turno para el día y hora: ${turno.fecha_hora} en ${nombreNegocio}.\n¡Te esperamos!`;
+
   return (
     <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
-      
-      {/* Barra superior */}
       <div className="max-w-6xl mx-auto flex justify-between items-center mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-gray-800">Panel de Control 📊</h1>
-          <p className="text-gray-500">Peluquería Raineri</p>
+          <h1 className="text-3xl font-bold text-gray-800">Panel de control</h1>
+          <p className="text-gray-500">{nombreNegocio}</p>
         </div>
-        <button className="bg-white border-2 border-gray-200 text-gray-600 px-4 py-2 rounded-lg font-bold hover:bg-gray-50">
-          Cerrar Sesión
+        <button
+          type="button"
+          onClick={cerrarSesion}
+          className="bg-white border-2 border-gray-200 text-gray-600 px-4 py-2 rounded-lg font-bold hover:bg-gray-50"
+        >
+          Cerrar sesión
         </button>
       </div>
 
-      {/* Contenido Principal */}
       <div className="max-w-6xl mx-auto bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-          <h2 className="text-xl font-bold text-gray-700">Turnos de Hoy</h2>
+          <h2 className="text-xl font-bold text-gray-700">Agenda</h2>
           <span className="bg-blue-100 text-blue-800 text-sm font-bold px-3 py-1 rounded-full">
             {turnos.length} turnos
           </span>
         </div>
 
-        {/* Tabla de Turnos */}
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -65,16 +106,16 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              
               {cargando ? (
                 <tr>
-                  <td colSpan="4" className="p-8 text-center text-gray-400">Cargando agenda...</td>
+                  <td colSpan="4" className="p-8 text-center text-gray-400">
+                    Cargando agenda…
+                  </td>
                 </tr>
               ) : turnos.length === 0 ? (
                 <tr>
                   <td colSpan="4" className="p-8 text-center text-gray-500">
-                    <p className="text-lg mb-2">No hay turnos para mostrar. 📭</p>
-                    <p className="text-sm text-gray-400">(O todavía no armamos la ruta en el Backend)</p>
+                    No hay turnos para mostrar.
                   </td>
                 </tr>
               ) : (
@@ -82,18 +123,23 @@ export default function Dashboard() {
                   <tr key={turno.id} className="hover:bg-gray-50 transition-colors">
                     <td className="p-4 font-bold text-gray-800">{turno.fecha_hora}</td>
                     <td className="p-4 font-medium text-gray-600">{turno.nombre_cliente}</td>
-                   <td className="p-4 text-gray-500">
-    <a 
-    href={`https://wa.me/${turno.whatsapp_cliente}?text=${encodeURIComponent(`¡Hola ${turno.nombre_cliente}! 💈\nTe confirmamos tu turno para el día y hora: ${turno.fecha_hora} en Peluquería Raineri.\n¡Te esperamos!`)}`} 
-    target="_blank" 
-    rel="noopener noreferrer"
-    className="text-green-600 hover:underline font-bold flex items-center gap-1"
-  >
-    💬 {turno.whatsapp_cliente}
-  </a>
-</td>
+                    <td className="p-4 text-gray-500">
+                      {turno.whatsapp_cliente ? (
+                        <a
+                          href={`https://wa.me/${turno.whatsapp_cliente}?text=${encodeURIComponent(textoWhatsApp(turno))}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-green-600 hover:underline font-bold flex items-center gap-1"
+                        >
+                          {turno.whatsapp_cliente}
+                        </a>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     <td className="p-4">
-                      <button 
+                      <button
+                        type="button"
                         onClick={() => cancelarTurno(turno.id)}
                         className="text-red-500 hover:text-red-700 font-bold text-sm"
                       >
@@ -103,12 +149,10 @@ export default function Dashboard() {
                   </tr>
                 ))
               )}
-
             </tbody>
           </table>
         </div>
       </div>
-
     </div>
   );
 }

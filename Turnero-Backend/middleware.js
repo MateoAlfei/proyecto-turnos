@@ -1,7 +1,5 @@
 const jwt = require('jsonwebtoken');
-
-// ¡OJO! Esta clave secreta tiene que ser EXACTAMENTE la misma que pusiste en index.js para el login
-const JWT_SECRET = 'Turnero2026*'; 
+const { JWT_SECRET } = require('./jwtSecret');
 
 const verificarToken = (req, res, next) => {
   // 1. Buscamos el token en la cabecera (Header) de la petición

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { API_BASE, NEGOCIO_PUBLICO_ID } from '../config';
 
 export default function ReservaCliente() {
   const [servicios, setServicios] = useState([]);
@@ -17,7 +18,7 @@ export default function ReservaCliente() {
 
   // 1. Al entrar, traemos los servicios
   useEffect(() => {
-    fetch('https://proyecto-turnos.onrender.com/api/servicios?negocio_id=1')
+    fetch(`${API_BASE}/api/servicios?negocio_id=${NEGOCIO_PUBLICO_ID}`)
       .then((res) => res.json())
       .then((datos) => {
         setServicios(datos);
@@ -33,10 +34,11 @@ export default function ReservaCliente() {
     setHoraSeleccionada(null); // Reseteamos la hora si cambia de día
     setCargandoHorarios(true);
     
-    fetch(`https://proyecto-turnos.onrender.com/api/turnos-disponibles?negocio_id=1&fecha=${nuevaFecha}`)
+    fetch(`${API_BASE}/api/turnos/disponibles?negocio_id=${NEGOCIO_PUBLICO_ID}&fecha=${nuevaFecha}`)
       .then((res) => res.json())
       .then((datos) => {
-        setHorariosDisponibles(datos);
+        const lista = Array.isArray(datos.disponibles) ? datos.disponibles : [];
+        setHorariosDisponibles(lista);
         setCargandoHorarios(false);
       })
       .catch((error) => {
@@ -63,7 +65,7 @@ export default function ReservaCliente() {
     const fechaHoraFinal = `${fechaElegida} ${horaSeleccionada}`;
 
     const turnoNuevo = {
-      negocio_id: 1,
+      negocio_id: Number(NEGOCIO_PUBLICO_ID),
       servicio_id: servicioSeleccionado,
       fecha_hora: fechaHoraFinal,
       nombre_cliente: datosCliente.nombre,
@@ -72,7 +74,7 @@ export default function ReservaCliente() {
     };
 
     try {
-      const respuesta = await fetch('https://proyecto-turnos.onrender.com/api/turnos', {
+      const respuesta = await fetch(`${API_BASE}/api/turnos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(turnoNuevo)
