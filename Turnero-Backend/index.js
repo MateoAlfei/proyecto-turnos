@@ -196,8 +196,13 @@ app.post('/api/servicios', verificarToken, async (req, res) => {
   // Así evitamos que nos pasen un negocio_id falso por el body.
   const negocio_id = req.negocioLogueado.id; 
 
-  if (!nombre || !precio) {
+  if (!nombre || precio === undefined || precio === null || precio === '') {
     return res.status(400).json({ error: 'Faltan datos: nombre o precio' });
+  }
+
+  const precioNum = Number(precio);
+  if (!Number.isFinite(precioNum) || precioNum < 0) {
+    return res.status(400).json({ error: 'Precio inválido' });
   }
 
   try {
@@ -206,7 +211,7 @@ app.post('/api/servicios', verificarToken, async (req, res) => {
       VALUES ($1, $2, $3) 
       RETURNING *;
     `;
-    const resultado = await db.query(query, [negocio_id, nombre, precio]);
+    const resultado = await db.query(query, [negocio_id, String(nombre).trim(), precioNum]);
     
     res.status(201).json({ 
       mensaje: 'Servicio agregado al catálogo', 
@@ -215,6 +220,43 @@ app.post('/api/servicios', verificarToken, async (req, res) => {
   } catch (error) {
     console.error('Error creando servicio:', error);
     res.status(500).json({ error: 'Hubo un error al guardar el servicio' });
+  }
+});
+
+// Listado de servicios del negocio logueado (panel dueño)
+app.get('/api/servicios/propios', verificarToken, async (req, res) => {
+  try {
+    const resultado = await db.query(
+      'SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1 ORDER BY nombre ASC',
+      [req.negocioLogueado.id]
+    );
+    res.json(resultado.rows);
+  } catch (error) {
+    console.error('Error servicios propios:', error);
+    res.status(500).json({ error: 'Error al cargar servicios' });
+  }
+});
+
+app.delete('/api/servicios/:id', verificarToken, async (req, res) => {
+  const servicioId = Number(req.params.id);
+  if (!Number.isInteger(servicioId) || servicioId < 1) {
+    return res.status(400).json({ error: 'ID inválido' });
+  }
+  try {
+    const resultado = await db.query(
+      'DELETE FROM servicios WHERE id = $1 AND negocio_id = $2 RETURNING id',
+      [servicioId, req.negocioLogueado.id]
+    );
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({ error: 'Servicio no encontrado' });
+    }
+    res.json({ mensaje: 'Servicio eliminado' });
+  } catch (error) {
+    if (error.code === '23503') {
+      return res.status(409).json({ error: 'No se puede borrar: hay turnos que usan este servicio' });
+    }
+    console.error('Error borrando servicio:', error);
+    res.status(500).json({ error: 'Error al eliminar el servicio' });
   }
 });
 
@@ -331,10 +373,13 @@ app.get('/api/turnos', verificarToken, async (req, res) => {
     const negocio_id = req.negocioLogueado.id;
 
     const query = `
-      SELECT id, servicio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente
-      FROM turnos
-      WHERE negocio_id = $1
-      ORDER BY fecha_hora ASC
+      SELECT t.id, t.servicio_id, t.fecha_hora, t.nombre_cliente, t.email_cliente, t.whatsapp_cliente,
+             t.estado, t.precio,
+             s.nombre AS servicio_nombre
+      FROM turnos t
+      LEFT JOIN servicios s ON s.id = t.servicio_id
+      WHERE t.negocio_id = $1
+      ORDER BY t.fecha_hora ASC
     `;
     const resultado = await db.query(query, [negocio_id]);
 
@@ -343,6 +388,36 @@ app.get('/api/turnos', verificarToken, async (req, res) => {
   } catch (error) {
     console.error('ERROR AL TRAER LOS TURNOS:', error);
     res.status(500).json({ error: 'Hubo un problema al consultar la base de datos' });
+  }
+});
+
+// Cambiar estado del turno (pendiente ↔ completado) — no reemplaza cancelar (con mail)
+app.put('/api/turnos/:id/estado', verificarToken, async (req, res) => {
+  const turnoId = Number(req.params.id);
+  const { estado } = req.body;
+  const negocio_id = req.negocioLogueado.id;
+
+  if (!Number.isInteger(turnoId) || turnoId < 1) {
+    return res.status(400).json({ error: 'ID de turno inválido' });
+  }
+  if (estado !== 'pendiente' && estado !== 'completado') {
+    return res.status(400).json({ error: 'Solo se admite estado pendiente o completado' });
+  }
+
+  try {
+    const resultado = await db.query(
+      `UPDATE turnos SET estado = $1
+       WHERE id = $2 AND negocio_id = $3 AND estado != 'cancelado'
+       RETURNING *`,
+      [estado, turnoId, negocio_id]
+    );
+    if (resultado.rows.length === 0) {
+      return res.status(404).json({ error: 'Turno no encontrado o está cancelado' });
+    }
+    res.json({ turno: resultado.rows[0] });
+  } catch (error) {
+    console.error('Error actualizando estado:', error);
+    res.status(500).json({ error: 'No se pudo actualizar el estado' });
   }
 });
 
