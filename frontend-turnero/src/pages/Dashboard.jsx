@@ -37,6 +37,55 @@ function fechaLocalKey(val) {
   return `${y}-${m}-${d}`;
 }
 
+/** Fecha del turno para comparar rangos (hora local). */
+function parseTurnoFecha(fecha_hora) {
+  if (fecha_hora == null) return null;
+  if (fecha_hora instanceof Date) {
+    return Number.isNaN(fecha_hora.getTime()) ? null : fecha_hora;
+  }
+  const d = new Date(fecha_hora);
+  if (!Number.isNaN(d.getTime())) return d;
+  if (typeof fecha_hora === 'string' && /^\d{4}-\d{2}-\d{2}/.test(fecha_hora)) {
+    const d2 = new Date(`${fecha_hora.slice(0, 10)}T12:00:00`);
+    return Number.isNaN(d2.getTime()) ? null : d2;
+  }
+  return null;
+}
+
+/** Lunes 00:00 de la semana que contiene `ref` (calendario local). */
+function inicioSemanaLunes(ref = new Date()) {
+  const x = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+  const dow = x.getDay();
+  const delta = dow === 0 ? -6 : 1 - dow;
+  x.setDate(x.getDate() + delta);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+/** Domingo 23:59:59.999 de esa misma semana. */
+function finSemanaDomingo(ref = new Date()) {
+  const start = inicioSemanaLunes(ref);
+  return new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6, 23, 59, 59, 999);
+}
+
+function enMesCalendario(d, ref = new Date()) {
+  return d.getFullYear() === ref.getFullYear() && d.getMonth() === ref.getMonth();
+}
+
+function cumpleVistaAgenda(turno, vista) {
+  const d = parseTurnoFecha(turno.fecha_hora);
+  if (!d) return false;
+  const ref = new Date();
+  if (vista === 'hoy') return fechaLocalKey(d) === fechaLocalKey(ref);
+  if (vista === 'semana') {
+    const a = inicioSemanaLunes(ref);
+    const b = finSemanaDomingo(ref);
+    return d >= a && d <= b;
+  }
+  if (vista === 'mes') return enMesCalendario(d, ref);
+  return false;
+}
+
 function badgeEstado(estado) {
   const base = 'text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap';
   if (estado === 'completado') return `${base} bg-emerald-100 text-emerald-800`;
@@ -52,7 +101,7 @@ export default function Dashboard() {
   const [nombreNegocio, setNombreNegocio] = useState('');
   const [nuevoServicio, setNuevoServicio] = useState({ nombre: '', precio: '' });
   const [guardandoServicio, setGuardandoServicio] = useState(false);
-  const [filtroAgenda, setFiltroAgenda] = useState('todas');
+  const [filtroAgenda, setFiltroAgenda] = useState('hoy');
   const ahora = new Date();
   const [mesSel, setMesSel] = useState(String(ahora.getMonth() + 1));
   const [anioSel, setAnioSel] = useState(String(ahora.getFullYear()));
@@ -61,11 +110,10 @@ export default function Dashboard() {
   const [cargandoMetricas, setCargandoMetricas] = useState(false);
   const navigate = useNavigate();
 
-  const turnosVisibles = useMemo(() => {
-    if (filtroAgenda !== 'hoy') return turnos;
-    const hoyKey = fechaLocalKey(new Date());
-    return turnos.filter((t) => fechaLocalKey(t.fecha_hora) === hoyKey);
-  }, [turnos, filtroAgenda]);
+  const turnosVisibles = useMemo(
+    () => turnos.filter((t) => cumpleVistaAgenda(t, filtroAgenda)),
+    [turnos, filtroAgenda]
+  );
 
   const cargarTurnos = useCallback(async () => {
     const token = localStorage.getItem('turnero_token');
@@ -389,29 +437,27 @@ export default function Dashboard() {
           <div className="p-6 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-gray-50">
             <h2 className="text-xl font-bold text-gray-700">Agenda</h2>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex rounded-lg border-2 border-gray-200 overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setFiltroAgenda('todas')}
-                  className={`px-4 py-2 text-sm font-bold transition-colors ${
-                    filtroAgenda === 'todas' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  Todas
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFiltroAgenda('hoy')}
-                  className={`px-4 py-2 text-sm font-bold transition-colors ${
-                    filtroAgenda === 'hoy' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  Solo hoy
-                </button>
+              <div className="flex rounded-lg border-2 border-gray-200 overflow-hidden flex-wrap sm:flex-nowrap">
+                {[
+                  { id: 'hoy', label: 'Hoy' },
+                  { id: 'semana', label: 'Semana' },
+                  { id: 'mes', label: 'Mes' }
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setFiltroAgenda(id)}
+                    className={`px-3 sm:px-4 py-2 text-sm font-bold transition-colors flex-1 sm:flex-none min-w-[4.5rem] ${
+                      filtroAgenda === id ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-              <span className="bg-blue-100 text-blue-800 text-sm font-bold px-3 py-1 rounded-full">
-                {filtroAgenda === 'hoy' && turnos.length !== turnosVisibles.length
-                  ? `${turnosVisibles.length} hoy · ${turnos.length} total`
+              <span className="bg-blue-100 text-blue-800 text-sm font-bold px-3 py-1 rounded-full whitespace-nowrap">
+                {turnos.length !== turnosVisibles.length
+                  ? `${turnosVisibles.length} en vista · ${turnos.length} total`
                   : `${turnosVisibles.length} turnos`}
               </span>
             </div>
@@ -439,8 +485,12 @@ export default function Dashboard() {
                 ) : turnosVisibles.length === 0 ? (
                   <tr>
                     <td colSpan="6" className="p-8 text-center text-gray-500">
-                      {filtroAgenda === 'hoy' && turnos.length > 0
-                        ? 'No hay turnos para hoy en tu agenda.'
+                      {turnos.length > 0
+                        ? filtroAgenda === 'hoy'
+                          ? 'No hay turnos para hoy.'
+                          : filtroAgenda === 'semana'
+                            ? 'No hay turnos en esta semana (lun–dom).'
+                            : 'No hay turnos en este mes.'
                         : 'No hay turnos para mostrar.'}
                     </td>
                   </tr>
