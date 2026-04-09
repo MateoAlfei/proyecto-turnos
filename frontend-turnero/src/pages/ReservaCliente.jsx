@@ -4,7 +4,6 @@ export default function ReservaCliente() {
   const [servicios, setServicios] = useState([]);
   const [cargando, setCargando] = useState(true);
   
-  // Memoria del formulario
   const [servicioSeleccionado, setServicioSeleccionado] = useState(null);
   const [datosCliente, setDatosCliente] = useState({
     nombre: '',
@@ -12,9 +11,16 @@ export default function ReservaCliente() {
     whatsapp: '',
     fecha_hora: ''
   });
-
-  // Nuevo estado para saber si estamos esperando a Render
   const [enviando, setEnviando] = useState(false);
+
+  // --- NUEVO: CALCULAMOS LA FECHA ACTUAL ---
+  // Esto saca la fecha y hora de hoy en el formato exacto que pide el input de HTML (YYYY-MM-DDTHH:mm)
+  const obtenerFechaMinima = () => {
+    const hoy = new Date();
+    // Le restamos el desfasaje horario para que coincida con Argentina/tu país
+    hoy.setMinutes(hoy.getMinutes() - hoy.getTimezoneOffset());
+    return hoy.toISOString().slice(0, 16);
+  };
 
   const handleInputChange = (e) => {
     setDatosCliente({
@@ -33,42 +39,46 @@ export default function ReservaCliente() {
       .catch((error) => console.error("Error:", error));
   }, []);
 
-  // --- LA MAGIA REAL ---
   const intentarReservar = async () => {
-    setEnviando(true); // Apagamos el botón momentáneamente
+    // --- NUEVO: VALIDACIÓN DE HORARIO DE COMERCIO ---
+    const fechaElegida = new Date(datosCliente.fecha_hora);
+    const hora = fechaElegida.getHours();
+    
+    // Si elige antes de las 9 AM o después de las 20 PM (8 PM), lo rebotamos.
+    if (hora < 9 || hora >= 20) {
+      alert("⚠️ La peluquería solo atiende de 09:00 a 20:00 hs. Por favor, elegí otro horario.");
+      return; // Cortamos la función acá, no mandamos nada a Render
+    }
 
-    // Armamos el paquete EXACTO como lo pide tu backend
+    setEnviando(true); 
+
     const turnoNuevo = {
       negocio_id: 1,
       servicio_id: servicioSeleccionado,
-      fecha_hora: datosCliente.fecha_hora.replace('T', ' '), // Acomodamos la T que pone HTML en las fechas
+      fecha_hora: datosCliente.fecha_hora.replace('T', ' '),
       nombre_cliente: datosCliente.nombre,
       email_cliente: datosCliente.email,
       whatsapp_cliente: datosCliente.whatsapp
     };
 
     try {
-      // Le pegamos a tu ruta POST
       const respuesta = await fetch('https://proyecto-turnos.onrender.com/api/turnos', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(turnoNuevo)
       });
 
       if (respuesta.status === 201) {
-        alert("¡Turno guardado con éxito! 🎉 Revisá tu bandeja de entrada.");
-        // Opcional: acá podrías recargar la página o vaciar el formulario
+        alert("¡Turno guardado con éxito! 🎉");
         window.location.reload(); 
       } else {
-        alert("Uy, hubo un problema al guardar el turno. Intentá de nuevo.");
+        alert("Uy, hubo un problema al guardar el turno.");
       }
     } catch (error) {
-      console.error("Error al enviar el turno:", error);
-      alert("Error de conexión con el servidor.");
+      console.error("Error:", error);
+      alert("Error de conexión.");
     } finally {
-      setEnviando(false); // Volvemos a prender el botón
+      setEnviando(false);
     }
   };
 
@@ -81,7 +91,6 @@ export default function ReservaCliente() {
           <p className="text-gray-500">Reservá tu turno online en segundos</p>
         </div>
 
-        {/* Sección Servicios */}
         <div className="mb-8">
           <h2 className="text-xl font-bold text-gray-700 mb-4">1. Elegí un servicio</h2>
           {cargando ? (
@@ -111,18 +120,25 @@ export default function ReservaCliente() {
           )}
         </div>
 
-        {/* Sección Datos */}
         <div className="mb-8">
           <h2 className="text-xl font-bold text-gray-700 mb-4">2. Tus datos y horario</h2>
           <div className="space-y-4">
             <input type="text" name="nombre" placeholder="Tu Nombre" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
-            <input type="email" name="email" placeholder="Tu Email (Para recibir el ticket)" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
-            <input type="tel" name="whatsapp" placeholder="Tu WhatsApp" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
-            <input type="datetime-local" name="fecha_hora" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none text-gray-600" />
+            <input type="email" name="email" placeholder="Tu Email" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
+            <input type="tel" name="whatsapp" placeholder="Tu WhatsApp (Ej: 549351...)" onChange={handleInputChange} className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none" />
+            
+            {/* NUEVO: Le agregamos el atributo "min" al calendario */}
+            <input 
+              type="datetime-local" 
+              name="fecha_hora" 
+              min={obtenerFechaMinima()} 
+              onChange={handleInputChange} 
+              className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none text-gray-600" 
+            />
+            <p className="text-xs text-gray-400 mt-1">Horario de atención: 09:00 a 20:00 hs.</p>
           </div>
         </div>
 
-        {/* Botón Final */}
         <button 
           onClick={intentarReservar}
           disabled={!servicioSeleccionado || !datosCliente.nombre || !datosCliente.fecha_hora || enviando}
@@ -134,4 +150,4 @@ export default function ReservaCliente() {
       </div>
     </div>
   );
-}   
+}
