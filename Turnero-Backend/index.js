@@ -149,7 +149,13 @@ app.get('/api/ping', (req, res) => {
 
 // Datos públicos del negocio (página de reservas por slug)
 app.get('/api/public/negocios/:slug', async (req, res) => {
-  const raw = (req.params.slug || '').trim().toLowerCase();
+  let raw = req.params.slug || '';
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    /* usar valor sin decodificar */
+  }
+  raw = raw.trim().toLowerCase();
   if (!raw) {
     return res.status(400).json({ error: 'Falta el identificador del negocio' });
   }

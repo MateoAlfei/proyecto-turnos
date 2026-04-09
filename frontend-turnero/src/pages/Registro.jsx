@@ -70,7 +70,8 @@ export default function Registro() {
       <div className="w-full max-w-lg bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
         <h1 className="text-2xl font-bold text-gray-800 mb-1">Alta de negocio</h1>
         <p className="text-gray-500 text-sm mb-6">
-          Después podés compartir el link <code className="bg-gray-100 px-1 rounded">/reservar/tu-slug</code>
+          Después el panel te muestra el link para clientes (formato{' '}
+          <code className="bg-gray-100 px-1 rounded">/#/reservar/tu-slug</code>).
         </p>
 
         <form onSubmit={enviar} className="space-y-4">

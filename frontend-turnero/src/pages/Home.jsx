@@ -22,8 +22,8 @@ export default function Home() {
         </Link>
       </div>
       <p className="text-sm text-slate-400 mt-10 max-w-md">
-        Cada negocio obtiene un enlace público del tipo <code className="text-slate-500">/reservar/tu-slug</code> al
-        registrarse.
+        Cada negocio tiene un enlace público (lo ves en el panel):{' '}
+        <code className="text-slate-500">/#/reservar/tu-slug</code>
       </p>
     </div>
   );

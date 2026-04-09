@@ -50,9 +50,10 @@ export default function Dashboard() {
     navigate('/admin');
   };
 
+  /* HashRouter: el # evita 404 en hosting estático (p. ej. Render) sin reglas de rewrite */
   const linkReservas =
     slugPublico && typeof window !== 'undefined'
-      ? `${window.location.origin}/reservar/${encodeURIComponent(slugPublico)}`
+      ? `${window.location.origin}/#/reservar/${encodeURIComponent(slugPublico)}`
       : null;
 
   const cancelarTurno = async (id) => {
