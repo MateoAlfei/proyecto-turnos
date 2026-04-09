@@ -20,6 +20,7 @@ const queryCrearTablas = `
 
 const ejecutarScript = async () => {
   try {
+    
     console.log('Creando tablas...');
     await db.query(queryCrearTablas);
     
