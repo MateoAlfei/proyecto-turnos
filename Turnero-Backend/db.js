@@ -1,12 +1,29 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// En la nube, usamos una "Connection String" (un link largo) en vez de usuario y contraseña separados.
-// Si no hay DATABASE_URL en el .env, usa una configuración por defecto para tu PC.
+/**
+ * Neon (y otros) a veces agregan `channel_binding=require`; `pg` en Node suele ir mejor sin ese parámetro.
+ */
+function normalizeDatabaseUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.delete('channel_binding');
+    return u.toString();
+  } catch {
+    return url.replace(/[&?]channel_binding=[^&]*/gi, '').replace(/\?&/, '?');
+  }
+}
+
+const rawUrl = process.env.DATABASE_URL;
+const connectionString = rawUrl
+  ? normalizeDatabaseUrl(rawUrl)
+  : 'postgresql://postgres:admin@localhost:5432/turnero';
+
+// En la nube hace falta SSL; en local (sin DATABASE_URL) no.
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:admin@localhost:5432/turnero',
-  // La nube exige conexión segura (SSL), así que la activamos si estamos usando el link de la nube
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+  connectionString,
+  ssl: rawUrl ? { rejectUnauthorized: false } : false
 });
 
 module.exports = {

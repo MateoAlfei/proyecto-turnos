@@ -102,7 +102,12 @@ export default function Dashboard() {
   const [nombreNegocio, setNombreNegocio] = useState('');
   const [nuevoServicio, setNuevoServicio] = useState({ nombre: '', precio: '' });
   const [guardandoServicio, setGuardandoServicio] = useState(false);
+  const [recursos, setRecursos] = useState([]);
+  const [cargandoRecursos, setCargandoRecursos] = useState(true);
+  const [nuevoRecurso, setNuevoRecurso] = useState({ nombre: '' });
+  const [guardandoRecurso, setGuardandoRecurso] = useState(false);
   const [filtroAgenda, setFiltroAgenda] = useState('hoy');
+  const [filtroRecurso, setFiltroRecurso] = useState('todos');
   const ahora = new Date();
   const [mesSel, setMesSel] = useState(String(ahora.getMonth() + 1));
   const [anioSel, setAnioSel] = useState(String(ahora.getFullYear()));
@@ -122,10 +127,14 @@ export default function Dashboard() {
   const [perfilGuardando, setPerfilGuardando] = useState(false);
   const navigate = useNavigate();
 
-  const turnosVisibles = useMemo(
-    () => turnos.filter((t) => cumpleVistaAgenda(t, filtroAgenda)),
-    [turnos, filtroAgenda]
-  );
+  const turnosVisibles = useMemo(() => {
+    let t = turnos.filter((x) => cumpleVistaAgenda(x, filtroAgenda));
+    if (filtroRecurso !== 'todos') {
+      const id = Number(filtroRecurso);
+      if (Number.isInteger(id)) t = t.filter((x) => x.recurso_id === id);
+    }
+    return t;
+  }, [turnos, filtroAgenda, filtroRecurso]);
 
   const cargarTurnos = useCallback(async () => {
     const token = localStorage.getItem('turnero_token');
@@ -167,6 +176,22 @@ export default function Dashboard() {
       setServicios([]);
     } finally {
       setCargandoServicios(false);
+    }
+  }, []);
+
+  const cargarRecursos = useCallback(async () => {
+    const token = localStorage.getItem('turnero_token');
+    if (!token) return;
+    setCargandoRecursos(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/recursos/propios`, { headers: getAuthHeaders() });
+      if (res.status === 401 || res.status === 403) return;
+      const datos = await res.json();
+      setRecursos(Array.isArray(datos) ? datos : []);
+    } catch {
+      setRecursos([]);
+    } finally {
+      setCargandoRecursos(false);
     }
   }, []);
 
@@ -222,8 +247,9 @@ export default function Dashboard() {
     setNombreNegocio(localStorage.getItem('turnero_nombre') || 'Tu negocio');
     cargarTurnos();
     cargarServicios();
+    cargarRecursos();
     cargarPerfil();
-  }, [cargarTurnos, cargarServicios, cargarPerfil]);
+  }, [cargarTurnos, cargarServicios, cargarRecursos, cargarPerfil]);
 
   useEffect(() => {
     cargarInsights();
@@ -354,6 +380,53 @@ export default function Dashboard() {
       return;
     }
     exportarAgendaCsv(turnosVisibles, filtroAgenda);
+  };
+
+  const agregarRecurso = async (e) => {
+    e.preventDefault();
+    const nombre = nuevoRecurso.nombre.trim();
+    if (!nombre) {
+      alert('Escribí un nombre (ej. Cancha 2, Ana)');
+      return;
+    }
+    setGuardandoRecurso(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/recursos`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ nombre })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'No se pudo crear el calendario');
+        return;
+      }
+      setNuevoRecurso({ nombre: '' });
+      await cargarRecursos();
+    } catch {
+      alert('Error de conexión');
+    } finally {
+      setGuardandoRecurso(false);
+    }
+  };
+
+  const eliminarRecurso = async (id) => {
+    if (!window.confirm('¿Eliminar este calendario? Solo se puede si no tiene turnos.')) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/recursos/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'No se pudo eliminar');
+        return;
+      }
+      if (String(filtroRecurso) === String(id)) setFiltroRecurso('todos');
+      await cargarRecursos();
+    } catch {
+      alert('Error de conexión');
+    }
   };
 
   const eliminarServicio = async (id) => {
@@ -515,6 +588,21 @@ export default function Dashboard() {
           <div className="p-6 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-gray-50">
             <h2 className="text-xl font-bold text-gray-700">Agenda</h2>
             <div className="flex flex-wrap items-center gap-2">
+              {recursos.length > 0 && (
+                <select
+                  value={filtroRecurso}
+                  onChange={(e) => setFiltroRecurso(e.target.value)}
+                  className="border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-medium bg-white max-w-[200px]"
+                  aria-label="Filtrar por calendario"
+                >
+                  <option value="todos">Todos los calendarios</option>
+                  {recursos.map((r) => (
+                    <option key={r.id} value={String(r.id)}>
+                      {r.nombre}
+                    </option>
+                  ))}
+                </select>
+              )}
               <div className="flex rounded-lg border-2 border-gray-200 overflow-hidden flex-wrap sm:flex-nowrap">
                 {[
                   { id: 'hoy', label: 'Hoy' },
@@ -549,10 +637,11 @@ export default function Dashboard() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[640px]">
+            <table className="w-full text-left border-collapse min-w-[720px]">
               <thead>
                 <tr className="bg-white border-b text-gray-500 text-sm uppercase tracking-wider">
                   <th className="p-4 font-semibold">Estado</th>
+                  <th className="p-4 font-semibold">Calendario</th>
                   <th className="p-4 font-semibold">Horario</th>
                   <th className="p-4 font-semibold">Cliente</th>
                   <th className="p-4 font-semibold">Servicio</th>
@@ -563,13 +652,13 @@ export default function Dashboard() {
               <tbody className="divide-y divide-gray-100">
                 {cargando ? (
                   <tr>
-                    <td colSpan="6" className="p-8 text-center text-gray-400">
+                    <td colSpan="7" className="p-8 text-center text-gray-400">
                       Cargando agenda…
                     </td>
                   </tr>
                 ) : turnosVisibles.length === 0 ? (
                   <tr>
-                    <td colSpan="6" className="p-8 text-center text-gray-500">
+                    <td colSpan="7" className="p-8 text-center text-gray-500">
                       {turnos.length > 0
                         ? filtroAgenda === 'hoy'
                           ? 'No hay turnos para hoy.'
@@ -586,6 +675,9 @@ export default function Dashboard() {
                       <tr key={turno.id} className="hover:bg-gray-50 transition-colors">
                         <td className="p-4">
                           <span className={badgeEstado(estado)}>{estado}</span>
+                        </td>
+                        <td className="p-4 text-gray-600 text-sm font-medium">
+                          {turno.recurso_nombre || '—'}
                         </td>
                         <td className="p-4 font-bold text-gray-800 whitespace-nowrap">{turno.fecha_hora}</td>
                         <td className="p-4 font-medium text-gray-600">{turno.nombre_cliente}</td>
@@ -652,6 +744,60 @@ export default function Dashboard() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="p-6 border-b border-gray-200 bg-gray-50">
+            <h2 className="text-xl font-bold text-gray-700">Calendarios</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Un calendario por cancha, peluquero o sala. Los clientes eligen uno al reservar; los horarios libres son
+              por calendario.
+            </p>
+          </div>
+          <div className="p-6">
+            <form onSubmit={agregarRecurso} className="flex flex-col sm:flex-row gap-3 mb-6">
+              <input
+                type="text"
+                placeholder="Ej. Cancha 1, María, Box 2"
+                value={nuevoRecurso.nombre}
+                onChange={(e) => setNuevoRecurso({ nombre: e.target.value })}
+                className="flex-1 border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-violet-500 outline-none"
+              />
+              <button
+                type="submit"
+                disabled={guardandoRecurso}
+                className="bg-violet-700 text-white font-bold px-6 py-3 rounded-xl hover:bg-violet-800 disabled:bg-gray-400"
+              >
+                {guardandoRecurso ? 'Guardando…' : 'Agregar calendario'}
+              </button>
+            </form>
+            {cargandoRecursos ? (
+              <p className="text-gray-400 animate-pulse">Cargando calendarios…</p>
+            ) : recursos.length === 0 ? (
+              <p className="text-amber-800 bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm">
+                No hay calendarios. Corré la migración del backend (<code className="text-xs">npm run migrate:recursos</code>)
+                o registrá el negocio de nuevo.
+              </p>
+            ) : (
+              <ul className="divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden">
+                {recursos.map((r) => (
+                  <li
+                    key={r.id}
+                    className="flex justify-between items-center gap-4 px-4 py-3 bg-white hover:bg-gray-50"
+                  >
+                    <span className="font-semibold text-gray-800">{r.nombre}</span>
+                    <button
+                      type="button"
+                      onClick={() => eliminarRecurso(r.id)}
+                      className="text-red-500 hover:text-red-700 text-sm font-bold shrink-0"
+                    >
+                      Eliminar
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
 

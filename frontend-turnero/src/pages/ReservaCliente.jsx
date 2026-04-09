@@ -8,8 +8,11 @@ export default function ReservaCliente() {
   const [errorNegocio, setErrorNegocio] = useState(false);
   const [servicios, setServicios] = useState([]);
   const [cargandoServicios, setCargandoServicios] = useState(true);
+  const [recursos, setRecursos] = useState([]);
+  const [cargandoRecursos, setCargandoRecursos] = useState(true);
 
   const [servicioSeleccionado, setServicioSeleccionado] = useState(null);
+  const [recursoSeleccionado, setRecursoSeleccionado] = useState(null);
   const [datosCliente, setDatosCliente] = useState({ nombre: '', email: '', whatsapp: '' });
 
   const [fechaElegida, setFechaElegida] = useState('');
@@ -50,15 +53,34 @@ export default function ReservaCliente() {
       });
   }, [negocio?.id]);
 
+  useEffect(() => {
+    if (!negocio?.id) {
+      setRecursos([]);
+      setCargandoRecursos(false);
+      return;
+    }
+    setCargandoRecursos(true);
+    fetch(`${API_BASE}/api/recursos?negocio_id=${negocio.id}`)
+      .then((res) => res.json())
+      .then((datos) => {
+        setRecursos(Array.isArray(datos) ? datos : []);
+        setCargandoRecursos(false);
+      })
+      .catch(() => {
+        setRecursos([]);
+        setCargandoRecursos(false);
+      });
+  }, [negocio?.id]);
+
   const handleFechaChange = (e) => {
     const nuevaFecha = e.target.value;
     setFechaElegida(nuevaFecha);
     setHoraSeleccionada(null);
-    if (!negocio?.id || !nuevaFecha) return;
+    if (!negocio?.id || !nuevaFecha || !recursoSeleccionado) return;
     setCargandoHorarios(true);
 
     fetch(
-      `${API_BASE}/api/turnos/disponibles?negocio_id=${negocio.id}&fecha=${nuevaFecha}`
+      `${API_BASE}/api/turnos/disponibles?negocio_id=${negocio.id}&fecha=${encodeURIComponent(nuevaFecha)}&recurso_id=${recursoSeleccionado}`
     )
       .then((res) => res.json())
       .then((datos) => {
@@ -90,6 +112,7 @@ export default function ReservaCliente() {
 
     const turnoNuevo = {
       negocio_id: negocio.id,
+      recurso_id: recursoSeleccionado,
       servicio_id: servicioSeleccionado,
       fecha_hora: fechaHoraFinal,
       nombre_cliente: datosCliente.nombre,
@@ -174,7 +197,40 @@ export default function ReservaCliente() {
               </div>
             )}
 
-            <h2 className="text-xl font-bold text-gray-700 mb-4">2. Tus datos</h2>
+            <h2 className="text-xl font-bold text-gray-700 mb-4">2. Calendario</h2>
+            <p className="text-sm text-gray-500 mb-3">
+              Elegí cancha, peluquero u otro espacio. Cada uno tiene su propia disponibilidad.
+            </p>
+            {cargandoRecursos ? (
+              <p className="animate-pulse text-gray-500 mb-8">Cargando…</p>
+            ) : recursos.length === 0 ? (
+              <p className="text-amber-800 bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm mb-8">
+                Este local todavía no configuró calendarios. Contactá al negocio.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 mb-8">
+                {recursos.map((r) => (
+                  <div
+                    key={r.id}
+                    onClick={() => {
+                      setRecursoSeleccionado(r.id);
+                      setFechaElegida('');
+                      setHoraSeleccionada(null);
+                      setHorariosDisponibles([]);
+                    }}
+                    className={`border-2 rounded-xl p-4 cursor-pointer transition-colors ${
+                      recursoSeleccionado === r.id
+                        ? 'border-violet-600 bg-violet-50'
+                        : 'border-gray-100 hover:border-violet-300'
+                    }`}
+                  >
+                    <h3 className="font-bold text-gray-700">{r.nombre}</h3>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <h2 className="text-xl font-bold text-gray-700 mb-4">3. Tus datos</h2>
             <div className="space-y-3">
               <input
                 type="text"
@@ -201,15 +257,20 @@ export default function ReservaCliente() {
           </div>
 
           <div>
-            <h2 className="text-xl font-bold text-gray-700 mb-4">3. Fecha y hora</h2>
+            <h2 className="text-xl font-bold text-gray-700 mb-4">4. Fecha y hora</h2>
+            {!recursoSeleccionado ? (
+              <p className="text-gray-500 text-sm mb-4">Primero elegí un calendario en el paso 2.</p>
+            ) : null}
             <input
               type="date"
               min={obtenerFechaMinima()}
+              value={fechaElegida}
               onChange={handleFechaChange}
-              className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none text-gray-700 mb-6 cursor-pointer"
+              disabled={!recursoSeleccionado}
+              className="w-full border-2 border-gray-200 p-3 rounded-xl focus:border-blue-500 outline-none text-gray-700 mb-6 cursor-pointer disabled:bg-gray-100 disabled:cursor-not-allowed"
             />
 
-            {fechaElegida && (
+            {fechaElegida && recursoSeleccionado && (
               <div>
                 <h3 className="font-bold text-gray-700 mb-3 text-center">
                   Horarios el {fechaElegida.split('-').reverse().join('/')}
@@ -249,11 +310,13 @@ export default function ReservaCliente() {
           onClick={intentarReservar}
           disabled={
             !servicioSeleccionado ||
+            !recursoSeleccionado ||
             !datosCliente.nombre ||
             !fechaElegida ||
             !horaSeleccionada ||
             enviando ||
-            servicios.length === 0
+            servicios.length === 0 ||
+            recursos.length === 0
           }
           className="w-full bg-gray-900 text-white text-lg font-bold py-4 rounded-xl mt-8 hover:bg-black transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
