@@ -12,6 +12,7 @@ export function exportarAgendaCsv(turnos, vista) {
   if (!turnos.length) return false;
   const headers = [
     'estado',
+    'calendario',
     'fecha_hora',
     'nombre_cliente',
     'email_cliente',
@@ -21,6 +22,7 @@ export function exportarAgendaCsv(turnos, vista) {
   ];
   const rows = turnos.map((t) => [
     t.estado || 'pendiente',
+    t.recurso_nombre ?? '',
     t.fecha_hora,
     t.nombre_cliente,
     t.email_cliente ?? '',

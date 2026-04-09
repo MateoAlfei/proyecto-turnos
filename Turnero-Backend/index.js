@@ -95,6 +95,15 @@ app.post('/api/auth/registro', async (req, res) => {
     ];
 
     const resultado = await db.query(query, valores);
+    const negId = resultado.rows[0].id;
+    try {
+      await db.query(
+        `INSERT INTO recursos (negocio_id, nombre, orden) VALUES ($1, 'Principal', 0)`,
+        [negId]
+      );
+    } catch (e) {
+      console.error('Aviso: no se pudo crear recurso por defecto (¿corriste npm run migrate:recursos?):', e.message);
+    }
 
     res.status(201).json({ mensaje: '¡Negocio registrado con éxito!', negocio: resultado.rows[0] });
   } catch (error) {
@@ -400,22 +409,124 @@ app.get('/api/servicios', async (req, res) => {
     res.status(500).json({ error: 'Hubo un error al cargar el catálogo' });
   }
 });
+
+// Calendarios / recursos (canchas, peluqueros, etc.) — lectura pública para la página de reservas
+app.get('/api/recursos', async (req, res) => {
+  const { negocio_id } = req.query;
+  const nid = Number(negocio_id);
+  if (!Number.isInteger(nid) || nid < 1) {
+    return res.status(400).json({ error: 'Falta negocio_id válido' });
+  }
+  try {
+    const resultado = await db.query(
+      `SELECT id, nombre, orden FROM recursos WHERE negocio_id = $1 ORDER BY orden ASC, id ASC`,
+      [nid]
+    );
+    res.json(resultado.rows);
+  } catch (error) {
+    console.error('Error listando recursos:', error);
+    res.status(500).json({ error: 'Error al cargar calendarios' });
+  }
+});
+
+app.get('/api/recursos/propios', verificarToken, async (req, res) => {
+  try {
+    const resultado = await db.query(
+      `SELECT id, nombre, orden FROM recursos WHERE negocio_id = $1 ORDER BY orden ASC, id ASC`,
+      [req.negocioLogueado.id]
+    );
+    res.json(resultado.rows);
+  } catch (error) {
+    console.error('Error recursos propios:', error);
+    res.status(500).json({ error: 'Error al cargar calendarios' });
+  }
+});
+
+app.post('/api/recursos', verificarToken, async (req, res) => {
+  const nombre = req.body?.nombre != null ? String(req.body.nombre).trim() : '';
+  if (!nombre) {
+    return res.status(400).json({ error: 'El nombre del calendario no puede quedar vacío' });
+  }
+  if (nombre.length > 120) {
+    return res.status(400).json({ error: 'Nombre demasiado largo (máx. 120)' });
+  }
+  try {
+    const maxOrden = await db.query(
+      `SELECT COALESCE(MAX(orden), -1) + 1 AS siguiente FROM recursos WHERE negocio_id = $1`,
+      [req.negocioLogueado.id]
+    );
+    const orden = maxOrden.rows[0].siguiente;
+    const resultado = await db.query(
+      `INSERT INTO recursos (negocio_id, nombre, orden) VALUES ($1, $2, $3) RETURNING id, nombre, orden`,
+      [req.negocioLogueado.id, nombre, orden]
+    );
+    res.status(201).json({ mensaje: 'Calendario agregado', recurso: resultado.rows[0] });
+  } catch (error) {
+    console.error('Error creando recurso:', error);
+    res.status(500).json({ error: 'No se pudo crear el calendario' });
+  }
+});
+
+app.delete('/api/recursos/:id', verificarToken, async (req, res) => {
+  const rid = Number(req.params.id);
+  if (!Number.isInteger(rid) || rid < 1) {
+    return res.status(400).json({ error: 'ID inválido' });
+  }
+  const negocio_id = req.negocioLogueado.id;
+  try {
+    const usados = await db.query(
+      `SELECT COUNT(*)::int AS n FROM turnos WHERE recurso_id = $1 AND negocio_id = $2`,
+      [rid, negocio_id]
+    );
+    if (usados.rows[0].n > 0) {
+      return res.status(409).json({
+        error: 'No se puede borrar: hay turnos asociados a este calendario (incluye cancelados)'
+      });
+    }
+    const total = await db.query(`SELECT COUNT(*)::int AS n FROM recursos WHERE negocio_id = $1`, [negocio_id]);
+    if (total.rows[0].n <= 1) {
+      return res.status(400).json({ error: 'Tenés que tener al menos un calendario' });
+    }
+    const del = await db.query(`DELETE FROM recursos WHERE id = $1 AND negocio_id = $2 RETURNING id`, [rid, negocio_id]);
+    if (del.rows.length === 0) {
+      return res.status(404).json({ error: 'Calendario no encontrado' });
+    }
+    res.json({ mensaje: 'Calendario eliminado' });
+  } catch (error) {
+    console.error('Error borrando recurso:', error);
+    res.status(500).json({ error: 'No se pudo eliminar el calendario' });
+  }
+});
+
 // Ruta para GUARDAR un turno nuevo
 // ==========================================
 //    RUTA PARA CREAR UN TURNO (SAAS PRO)
 // ==========================================
 app.post('/api/turnos', async (req, res) => {
-  const { negocio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id } = req.body;
+  const { negocio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, recurso_id } =
+    req.body;
 
   const nid = Number(negocio_id);
   if (!Number.isInteger(nid) || nid < 1) {
     return res.status(400).json({ error: 'negocio_id inválido' });
+  }
+  const rid = Number(recurso_id);
+  if (!Number.isInteger(rid) || rid < 1) {
+    return res.status(400).json({ error: 'Tenés que elegir un calendario (cancha, profesional, etc.)' });
   }
   if (!fecha_hora || !nombre_cliente) {
     return res.status(400).json({ error: 'Faltan fecha/hora o nombre del cliente' });
   }
 
   try {
+    const resRecurso = await db.query(
+      'SELECT id FROM recursos WHERE id = $1 AND negocio_id = $2',
+      [rid, nid]
+    );
+    if (resRecurso.rows.length === 0) {
+      return res.status(400).json({ error: 'Calendario inválido para este negocio' });
+    }
+
     const resNegocio = await db.query(
       'SELECT nombre, direccion FROM negocios WHERE id = $1',
       [nid]
@@ -437,12 +548,20 @@ app.post('/api/turnos', async (req, res) => {
 
     // 3. Guardamos el turno inyectando el servicio_id, el precioFinal y el estado 'pendiente'
     const query = `
-      INSERT INTO turnos (negocio_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precio, estado) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'pendiente') 
+      INSERT INTO turnos (negocio_id, recurso_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precio, estado) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pendiente') 
       RETURNING *;
     `;
-    const valores = [nid, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precioFinal];
-    const resultado = await db.query(query, valores);
+    const valores = [nid, rid, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precioFinal];
+    let resultado;
+    try {
+      resultado = await db.query(query, valores);
+    } catch (insErr) {
+      if (insErr && insErr.code === '23505') {
+        return res.status(409).json({ error: 'Ese horario ya está ocupado en este calendario' });
+      }
+      throw insErr;
+    }
 
     // 4. --- MAGIA DE MAILS ---
     // (Llamamos a tu función de email.js pasándole los datos reales)
@@ -481,7 +600,9 @@ app.post('/api/turnos', async (req, res) => {
 
   } catch (error) {
     console.error('ERROR COMPLETO AL GUARDAR EL TURNO:', error);
-    res.status(500).json({ error: 'Hubo un problema al guardar el turno' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Hubo un problema al guardar el turno' });
+    }
   }
 });
 
@@ -494,11 +615,13 @@ app.get('/api/turnos', verificarToken, async (req, res) => {
     const negocio_id = req.negocioLogueado.id;
 
     const query = `
-      SELECT t.id, t.servicio_id, t.fecha_hora, t.nombre_cliente, t.email_cliente, t.whatsapp_cliente,
+      SELECT t.id, t.servicio_id, t.recurso_id, t.fecha_hora, t.nombre_cliente, t.email_cliente, t.whatsapp_cliente,
              t.estado, t.precio,
-             s.nombre AS servicio_nombre
+             s.nombre AS servicio_nombre,
+             r.nombre AS recurso_nombre
       FROM turnos t
       LEFT JOIN servicios s ON s.id = t.servicio_id
+      LEFT JOIN recursos r ON r.id = t.recurso_id
       WHERE t.negocio_id = $1
       ORDER BY t.fecha_hora ASC
     `;
@@ -590,13 +713,22 @@ app.put('/api/turnos/:id/cancelar', verificarToken, async (req, res) => {
 // Ruta para OBTENER los horarios libres de un día (VERSIÓN DINÁMICA SAAS)
 
 app.get('/api/turnos/disponibles', async (req, res) => {
-  const { negocio_id, fecha } = req.query;
+  const { negocio_id, fecha, recurso_id } = req.query;
 
   if (!negocio_id || !fecha) {
     return res.status(400).json({ error: 'Faltan parámetros: negocio_id y fecha' });
   }
+  const rid = Number(recurso_id);
+  if (!Number.isInteger(rid) || rid < 1) {
+    return res.status(400).json({ error: 'Falta recurso_id (calendario) válido' });
+  }
 
   try {
+    const chk = await db.query('SELECT id FROM recursos WHERE id = $1 AND negocio_id = $2', [rid, negocio_id]);
+    if (chk.rows.length === 0) {
+      return res.status(404).json({ error: 'Calendario no encontrado para este negocio' });
+    }
+
     // 1. Buscamos la configuración EXACTA de este negocio
     const queryNegocio = 'SELECT hora_apertura, hora_cierre, duracion_turno_minutos FROM negocios WHERE id = $1';
     const resNegocio = await db.query(queryNegocio, [negocio_id]);
@@ -632,15 +764,16 @@ app.get('/api/turnos/disponibles', async (req, res) => {
     // 3. Armamos todos los horarios posibles de ese local
     const horariosPosibles = generarGrilla(config.hora_apertura, config.hora_cierre, config.duracion_turno_minutos);
 
-    // 4. Buscamos en SQL los horarios que YA ESTÁN OCUPADOS ese día
+    // 4. Buscamos en SQL los horarios que YA ESTÁN OCUPADOS ese día (solo en este calendario)
     const queryOcupados = `
       SELECT TO_CHAR(fecha_hora, 'HH24:MI') as hora_ocupada
       FROM turnos
       WHERE negocio_id = $1 
-        AND DATE(fecha_hora) = $2
+        AND recurso_id = $3
+        AND DATE(fecha_hora) = $2::date
         AND estado != 'cancelado'
     `;
-    const resOcupados = await db.query(queryOcupados, [negocio_id, fecha]);
+    const resOcupados = await db.query(queryOcupados, [negocio_id, fecha, rid]);
     const turnosOcupados = resOcupados.rows.map(row => row.hora_ocupada);
 
     // 5. Filtramos la grilla: dejamos solo los horarios que no están en la lista de ocupados
