@@ -161,6 +161,10 @@ app.post('/api/auth/registro', async (req, res) => {
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// 1. Agregá esta funcioncita justo arriba de tu app.post('/api/chat-bot', ...)
+// Esto es un temporizador para decirle a Node.js que espere un ratito.
+const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 app.post('/api/chat-bot', async (req, res) => {
   const { mensaje, whatsapp_cliente, negocio_id } = req.body;
 
@@ -171,9 +175,6 @@ app.post('/api/chat-bot', async (req, res) => {
     });
 
     const chat = model.startChat();
-    
-    // 1. TRUCO CLAVE: Le damos la fecha actual para que entienda qué es "hoy" o "mañana"
-    // Formato ISO: YYYY-MM-DD
     const fechaHoy = new Date().toISOString().split('T')[0]; 
     
     const promptSistema = `Sos el asistente virtual del negocio. 
@@ -186,12 +187,14 @@ app.post('/api/chat-bot', async (req, res) => {
     let result = await chat.sendMessage(`${promptSistema}\n\nCliente dice: ${mensaje}`);
     let response = result.response;
 
-    // 2. CAMBIO VITAL: Usamos un WHILE para procesar todas las herramientas que pida
-    while (response.functionCalls()) {
-      const calls = response.functionCalls();
-      const functionResponses = []; // Acá vamos a guardar las respuestas de la BD
+    // 2. EL FRENO: Le ponemos un límite de 5 vueltas máximo
+    let vueltas = 0; 
 
-      // Procesamos cada herramienta que haya pedido en esta ronda
+    while (response.functionCalls() && vueltas < 5) {
+      vueltas++; // Sumamos una vuelta
+      const calls = response.functionCalls();
+      const functionResponses = []; 
+
       for (const call of calls) {
         let dataForAi = {};
         
@@ -203,7 +206,6 @@ app.post('/api/chat-bot', async (req, res) => {
           
           else if (call.name === "consultarDisponibilidad") {
             const { fecha } = call.args;
-            // Ojo acá: Si lo corrés en local, asegurate de que la URL sea http://localhost:3000
             const baseUrl = process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 3000}`;
             const resDisp = await fetch(`${baseUrl}/api/turnos/disponibles?negocio_id=${negocio_id}&fecha=${fecha}`);
             dataForAi = await resDisp.json();
@@ -222,21 +224,22 @@ app.post('/api/chat-bot', async (req, res) => {
           dataForAi = { error: "Hubo un fallo al buscar en la base de datos." };
         }
 
-        // Empaquetamos la respuesta de esta función
         functionResponses.push({
-          functionResponse: {
-            name: call.name,
-            response: { content: dataForAi }
-          }
+          functionResponse: { name: call.name, response: { content: dataForAi } }
         });
       }
 
-      // 3. Le mandamos todas las respuestas juntas a la IA
+      // 3. LA PAUSA: Frenamos 1.5 segundos para que Google no nos rete
+      await esperar(1500); 
+
       result = await chat.sendMessage(functionResponses);
       response = result.response;
     }
 
-    // 4. Cuando ya no pide más funciones, devolvemos el texto final al cliente
+    if (vueltas >= 5) {
+      console.log("⚠️ Se cortó el bucle por seguridad para no gastar la API.");
+    }
+
     res.json({ respuesta: response.text() });
 
   } catch (error) {
