@@ -172,9 +172,13 @@ app.post('/api/chat-bot', async (req, res) => {
 
     const chat = model.startChat();
     
-    // El sistema le da el "Manual de Procedimientos" a la IA
-    const promptSistema = `Sos el asistente de Peluquería Raineri. 
-    Usá un tono amable y argentino. 
+    // 1. TRUCO CLAVE: Le damos la fecha actual para que entienda qué es "hoy" o "mañana"
+    // Formato ISO: YYYY-MM-DD
+    const fechaHoy = new Date().toISOString().split('T')[0]; 
+    
+    const promptSistema = `Sos el asistente virtual del negocio. 
+    Hoy es la fecha: ${fechaHoy}.
+    Usá un tono amable, conciso, y un estilo argentino informal.
     Para dar turnos, SIEMPRE consultá primero los servicios y la disponibilidad.
     ID de este negocio: ${negocio_id}. 
     WhatsApp del cliente: ${whatsapp_cliente}.`;
@@ -182,45 +186,64 @@ app.post('/api/chat-bot', async (req, res) => {
     let result = await chat.sendMessage(`${promptSistema}\n\nCliente dice: ${mensaje}`);
     let response = result.response;
 
-    // Lógica de ejecución de funciones (Loop de herramientas)
-    const call = response.functionCalls()?.[0];
-    if (call) {
-      let dataForAi;
-      
-      if (call.name === "consultarServicios") {
-        const r = await db.query('SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1', [negocio_id]);
-        dataForAi = r.rows;
-      } 
-      
-      if (call.name === "consultarDisponibilidad") {
-        // Reutilizamos tu lógica de disponibilidad dinámica
-        const { fecha } = call.args;
-        const resDisp = await fetch(`${getPublicApiBase()}/api/turnos/disponibles?negocio_id=${negocio_id}&fecha=${fecha}`);
-        dataForAi = await resDisp.json();
+    // 2. CAMBIO VITAL: Usamos un WHILE para procesar todas las herramientas que pida
+    while (response.functionCalls()) {
+      const calls = response.functionCalls();
+      const functionResponses = []; // Acá vamos a guardar las respuestas de la BD
+
+      // Procesamos cada herramienta que haya pedido en esta ronda
+      for (const call of calls) {
+        let dataForAi = {};
+        
+        try {
+          if (call.name === "consultarServicios") {
+            const r = await db.query('SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1', [negocio_id]);
+            dataForAi = r.rows;
+          } 
+          
+          else if (call.name === "consultarDisponibilidad") {
+            const { fecha } = call.args;
+            // Ojo acá: Si lo corrés en local, asegurate de que la URL sea http://localhost:3000
+            const baseUrl = process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 3000}`;
+            const resDisp = await fetch(`${baseUrl}/api/turnos/disponibles?negocio_id=${negocio_id}&fecha=${fecha}`);
+            dataForAi = await resDisp.json();
+          }
+
+          else if (call.name === "crearReserva") {
+            const { servicio_id, fecha_hora, nombre_cliente } = call.args;
+            const r = await db.query(
+              'INSERT INTO turnos (negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+              [negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente]
+            );
+            dataForAi = { mensaje: "Turno reservado con éxito en la base de datos", id: r.rows[0].id };
+          }
+        } catch (error) {
+          console.error(`Error ejecutando la función ${call.name}:`, error);
+          dataForAi = { error: "Hubo un fallo al buscar en la base de datos." };
+        }
+
+        // Empaquetamos la respuesta de esta función
+        functionResponses.push({
+          functionResponse: {
+            name: call.name,
+            response: { content: dataForAi }
+          }
+        });
       }
 
-      if (call.name === "crearReserva") {
-        // Ejecutamos tu lógica de inserción de turnos
-        const { servicio_id, fecha_hora, nombre_cliente } = call.args;
-        const r = await db.query(
-          'INSERT INTO turnos (negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-          [negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente]
-        );
-        dataForAi = { mensaje: "Turno reservado con éxito", id: r.rows[0].id };
-      }
-
-      // Le devolvemos el resultado de la función a la IA para que le conteste al cliente
-      result = await chat.sendMessage([{ functionResponse: { name: call.name, response: { content: dataForAi } } }]);
+      // 3. Le mandamos todas las respuestas juntas a la IA
+      result = await chat.sendMessage(functionResponses);
       response = result.response;
     }
 
+    // 4. Cuando ya no pide más funciones, devolvemos el texto final al cliente
     res.json({ respuesta: response.text() });
 
   } catch (error) {
     console.error("Error en el bot:", error);
     res.status(500).json({ error: "No pude procesar el mensaje" });
   }
-}); 
+});
 // Ruta para INICIAR SESIÓN (Login)
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
