@@ -10,6 +10,53 @@ const { slugify, elegirSlugUnico } = require('./slugUtils');
 const PORT = process.env.PORT || 3000;
 const app = express();
 const { enviarMailConfirmacion, enviarMailCancelacion } = require('./email');
+
+
+// Definición de las herramientas para Gemini
+const tools = [
+  {
+    functionDeclarations: [
+      {
+        name: "consultarServicios",
+        description: "Obtiene la lista de servicios y precios de la peluquería.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            negocio_id: { type: "NUMBER", description: "El ID del negocio" }
+          },
+          required: ["negocio_id"]
+        }
+      },
+      {
+        name: "consultarDisponibilidad",
+        description: "Busca los horarios disponibles para una fecha específica.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            negocio_id: { type: "NUMBER", description: "El ID del negocio" },
+            fecha: { type: "STRING", description: "Fecha en formato YYYY-MM-DD" }
+          },
+          required: ["negocio_id", "fecha"]
+        }
+      },
+      {
+        name: "crearReserva",
+        description: "Registra un nuevo turno en la base de datos.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            negocio_id: { type: "NUMBER" },
+            nombre_cliente: { type: "STRING" },
+            whatsapp_cliente: { type: "STRING" },
+            servicio_id: { type: "NUMBER" },
+            fecha_hora: { type: "STRING", description: "Formato YYYY-MM-DD HH:mm" }
+          },
+          required: ["negocio_id", "nombre_cliente", "whatsapp_cliente", "servicio_id", "fecha_hora"]
+        }
+      }
+    ]
+  }
+];
 // Configuraciones básicas
 app.use(cors());
 app.use(express.json()); // Permite que el servidor entienda datos en formato JSON
@@ -111,7 +158,69 @@ app.post('/api/auth/registro', async (req, res) => {
     res.status(500).json({ error: 'Hubo un error al registrar el negocio (¿el email ya existe?)' });
   }
 });
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+app.post('/api/chat-bot', async (req, res) => {
+  const { mensaje, whatsapp_cliente, negocio_id } = req.body;
+
+  try {
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-2.5-flash", 
+      tools: tools 
+    });
+
+    const chat = model.startChat();
+    
+    // El sistema le da el "Manual de Procedimientos" a la IA
+    const promptSistema = `Sos el asistente de Peluquería Raineri. 
+    Usá un tono amable y argentino. 
+    Para dar turnos, SIEMPRE consultá primero los servicios y la disponibilidad.
+    ID de este negocio: ${negocio_id}. 
+    WhatsApp del cliente: ${whatsapp_cliente}.`;
+
+    let result = await chat.sendMessage(`${promptSistema}\n\nCliente dice: ${mensaje}`);
+    let response = result.response;
+
+    // Lógica de ejecución de funciones (Loop de herramientas)
+    const call = response.functionCalls()?.[0];
+    if (call) {
+      let dataForAi;
+      
+      if (call.name === "consultarServicios") {
+        const r = await db.query('SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1', [negocio_id]);
+        dataForAi = r.rows;
+      } 
+      
+      if (call.name === "consultarDisponibilidad") {
+        // Reutilizamos tu lógica de disponibilidad dinámica
+        const { fecha } = call.args;
+        const resDisp = await fetch(`${getPublicApiBase()}/api/turnos/disponibles?negocio_id=${negocio_id}&fecha=${fecha}`);
+        dataForAi = await resDisp.json();
+      }
+
+      if (call.name === "crearReserva") {
+        // Ejecutamos tu lógica de inserción de turnos
+        const { servicio_id, fecha_hora, nombre_cliente } = call.args;
+        const r = await db.query(
+          'INSERT INTO turnos (negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+          [negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente]
+        );
+        dataForAi = { mensaje: "Turno reservado con éxito", id: r.rows[0].id };
+      }
+
+      // Le devolvemos el resultado de la función a la IA para que le conteste al cliente
+      result = await chat.sendMessage([{ functionResponse: { name: call.name, response: { content: dataForAi } } }]);
+      response = result.response;
+    }
+
+    res.json({ respuesta: response.text() });
+
+  } catch (error) {
+    console.error("Error en el bot:", error);
+    res.status(500).json({ error: "No pude procesar el mensaje" });
+  }
+}); 
 // Ruta para INICIAR SESIÓN (Login)
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;

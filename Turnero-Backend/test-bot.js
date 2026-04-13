@@ -6,7 +6,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 async function probarBot() {
   try {
     // Usamos el modelo gratis y rapidísimo
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     // 1. SIMULAMOS TU BASE DE DATOS (Lo que después tu código traerá con SQL)
     const infoNegocio = "Barbería Los Hermanos";
@@ -17,7 +17,7 @@ async function probarBot() {
     const horariosLibresHoy = ["16:00", "16:30", "18:00"];
 
     // 2. EL MENSAJE DEL CLIENTE
-    const mensajeCliente = "Hola jefe, qué precio tiene el corte y barba? tenés lugar hoy a la tardecita?";
+    const mensajeCliente = "Hola jefe, qué precio tiene el corte y barba? tenés lugar mañana a la mañana?";
 
     // 3. EL PROMPT MAESTRO (Acá le programamos la cabeza al bot)
     const promptMaestro = `
