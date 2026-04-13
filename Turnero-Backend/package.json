@@ -8,6 +8,7 @@
     "dev": "nodemon index.js",
     "migrate": "node arreglarNegocios.js",
     "migrate:recursos": "node migrarRecursos.js",
+    "migrate:turnos-publicos": "node migrarTurnosPublicos.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

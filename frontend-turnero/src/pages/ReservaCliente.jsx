@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { API_BASE } from '../config';
 
@@ -72,16 +72,22 @@ export default function ReservaCliente() {
       });
   }, [negocio?.id]);
 
-  const handleFechaChange = (e) => {
-    const nuevaFecha = e.target.value;
-    setFechaElegida(nuevaFecha);
-    setHoraSeleccionada(null);
-    if (!negocio?.id || !nuevaFecha || !recursoSeleccionado) return;
-    setCargandoHorarios(true);
+  const recursoParam = useMemo(() => {
+    if (!recursoSeleccionado || recursoSeleccionado === 'any') return null;
+    return Number(recursoSeleccionado);
+  }, [recursoSeleccionado]);
 
-    fetch(
-      `${API_BASE}/api/turnos/disponibles?negocio_id=${negocio.id}&fecha=${encodeURIComponent(nuevaFecha)}&recurso_id=${recursoSeleccionado}`
-    )
+  const cargarDisponibilidad = (nuevaFecha, recursoValue) => {
+    if (!negocio?.id || !nuevaFecha || !recursoValue) return;
+    setCargandoHorarios(true);
+    const qs = new URLSearchParams({
+      negocio_id: String(negocio.id),
+      fecha: nuevaFecha
+    });
+    if (recursoValue !== 'any') {
+      qs.set('recurso_id', String(recursoValue));
+    }
+    fetch(`${API_BASE}/api/turnos/disponibles?${qs.toString()}`)
       .then((res) => res.json())
       .then((datos) => {
         const lista = Array.isArray(datos.disponibles) ? datos.disponibles : [];
@@ -92,6 +98,14 @@ export default function ReservaCliente() {
         setHorariosDisponibles([]);
         setCargandoHorarios(false);
       });
+  };
+
+  const handleFechaChange = (e) => {
+    const nuevaFecha = e.target.value;
+    setFechaElegida(nuevaFecha);
+    setHoraSeleccionada(null);
+    if (!negocio?.id || !nuevaFecha || !recursoSeleccionado) return;
+    cargarDisponibilidad(nuevaFecha, recursoSeleccionado);
   };
 
   const handleInputChange = (e) => {
@@ -112,13 +126,15 @@ export default function ReservaCliente() {
 
     const turnoNuevo = {
       negocio_id: negocio.id,
-      recurso_id: recursoSeleccionado,
       servicio_id: servicioSeleccionado,
       fecha_hora: fechaHoraFinal,
       nombre_cliente: datosCliente.nombre,
       email_cliente: datosCliente.email,
       whatsapp_cliente: datosCliente.whatsapp
     };
+    if (recursoParam) {
+      turnoNuevo.recurso_id = recursoParam;
+    }
 
     try {
       const respuesta = await fetch(`${API_BASE}/api/turnos`, {
@@ -199,7 +215,7 @@ export default function ReservaCliente() {
 
             <h2 className="text-xl font-bold text-gray-700 mb-4">2. Calendario</h2>
             <p className="text-sm text-gray-500 mb-3">
-              Elegí cancha, peluquero u otro espacio. Cada uno tiene su propia disponibilidad.
+              Elegí un calendario puntual o "Cualquiera disponible" para asignación automática.
             </p>
             {cargandoRecursos ? (
               <p className="animate-pulse text-gray-500 mb-8">Cargando…</p>
@@ -209,6 +225,22 @@ export default function ReservaCliente() {
               </p>
             ) : (
               <div className="grid grid-cols-1 gap-3 mb-8">
+                <div
+                  onClick={() => {
+                    setRecursoSeleccionado('any');
+                    setFechaElegida('');
+                    setHoraSeleccionada(null);
+                    setHorariosDisponibles([]);
+                  }}
+                  className={`border-2 rounded-xl p-4 cursor-pointer transition-colors ${
+                    recursoSeleccionado === 'any'
+                      ? 'border-violet-600 bg-violet-50'
+                      : 'border-gray-100 hover:border-violet-300'
+                  }`}
+                >
+                  <h3 className="font-bold text-gray-700">Cualquiera disponible</h3>
+                  <p className="text-xs text-gray-500 mt-1">Te asignamos automáticamente el primer calendario libre.</p>
+                </div>
                 {recursos.map((r) => (
                   <div
                     key={r.id}
@@ -275,6 +307,11 @@ export default function ReservaCliente() {
                 <h3 className="font-bold text-gray-700 mb-3 text-center">
                   Horarios el {fechaElegida.split('-').reverse().join('/')}
                 </h3>
+                {recursoSeleccionado === 'any' && (
+                  <p className="text-xs text-gray-500 text-center mb-3">
+                    Mostramos horarios donde hay al menos un calendario libre.
+                  </p>
+                )}
 
                 {cargandoHorarios ? (
                   <p className="text-center text-gray-500 animate-pulse">Buscando disponibilidad…</p>

@@ -156,6 +156,68 @@ app.get('/api/ping', (req, res) => {
   res.json({ mensaje: '¡El backend del turnero está vivo!' });
 });
 
+// Acciones públicas firmadas para clientes (desde link en email)
+app.get('/api/public/turnos/:accion', async (req, res) => {
+  const accion = req.params.accion;
+  const token = req.query?.token ? String(req.query.token) : '';
+  if (!token) {
+    return res.status(400).send(renderHtmlEstadoPublico('Link inválido', 'Falta el token de validación.'));
+  }
+  if (accion !== 'confirmar' && accion !== 'cancelar') {
+    return res.status(404).send(renderHtmlEstadoPublico('Acción inválida', 'La acción solicitada no existe.'));
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload || payload.act !== accion || !Number.isInteger(Number(payload.tid))) {
+      return res.status(400).send(renderHtmlEstadoPublico('Link inválido', 'El enlace no es válido para esta acción.'));
+    }
+    const tid = Number(payload.tid);
+
+    if (accion === 'confirmar') {
+      const r = await db.query(
+        `UPDATE turnos
+         SET asistencia_confirmada = TRUE,
+             asistencia_confirmada_at = NOW()
+         WHERE id = $1 AND estado != 'cancelado'
+         RETURNING id, fecha_hora`,
+        [tid]
+      );
+      if (r.rows.length === 0) {
+        return res.status(404).send(
+          renderHtmlEstadoPublico('No se pudo confirmar', 'El turno no existe o ya fue cancelado.')
+        );
+      }
+      return res.send(
+        renderHtmlEstadoPublico(
+          'Asistencia confirmada',
+          `Gracias. Tu turno del ${String(r.rows[0].fecha_hora)} quedó confirmado.`
+        )
+      );
+    }
+
+    const r = await db.query(
+      `UPDATE turnos
+       SET estado = 'cancelado'
+       WHERE id = $1 AND estado != 'cancelado'
+       RETURNING id, fecha_hora`,
+      [tid]
+    );
+    if (r.rows.length === 0) {
+      return res.status(404).send(
+        renderHtmlEstadoPublico('No se pudo cancelar', 'El turno no existe o ya estaba cancelado.')
+      );
+    }
+    return res.send(
+      renderHtmlEstadoPublico('Turno cancelado', `Tu turno del ${String(r.rows[0].fecha_hora)} fue cancelado correctamente.`)
+    );
+  } catch (error) {
+    return res
+      .status(400)
+      .send(renderHtmlEstadoPublico('Link vencido o inválido', 'Solicitá un nuevo enlace al negocio.'));
+  }
+});
+
 // Datos públicos del negocio (página de reservas por slug)
 app.get('/api/public/negocios/:slug', async (req, res) => {
   let raw = req.params.slug || '';
@@ -207,6 +269,60 @@ function normalizarHoraInput(h) {
     return null;
   }
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function horaToMinutos(hhmm) {
+  const [h, m] = String(hhmm).slice(0, 5).split(':').map(Number);
+  return h * 60 + m;
+}
+
+function diaSemanaDesdeFecha(fechaYYYYMMDD) {
+  return new Date(`${fechaYYYYMMDD}T12:00:00`).getDay(); // 0=domingo...6=sábado
+}
+
+function recursoHabilitadoEnHorario(recurso, diaSemana, horaTurno, duracionMinutos) {
+  const dias = Array.isArray(recurso?.dias_habilitados) ? recurso.dias_habilitados : [0, 1, 2, 3, 4, 5, 6];
+  if (!dias.includes(diaSemana)) return false;
+  const apertura = recurso?.hora_apertura ? String(recurso.hora_apertura).slice(0, 5) : null;
+  const cierre = recurso?.hora_cierre ? String(recurso.hora_cierre).slice(0, 5) : null;
+  if (!apertura || !cierre) return true;
+  const ini = horaToMinutos(horaTurno);
+  const a = horaToMinutos(apertura);
+  const c = horaToMinutos(cierre);
+  return ini >= a && (ini + duracionMinutos) <= c;
+}
+
+function getPublicApiBase() {
+  return (
+    process.env.PUBLIC_API_URL ||
+    process.env.BACKEND_PUBLIC_URL ||
+    `http://localhost:${PORT}`
+  );
+}
+
+function renderHtmlEstadoPublico(titulo, detalle) {
+  return `<!doctype html>
+  <html lang="es">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>${titulo}</title>
+      <style>
+        body { font-family: Arial, sans-serif; background:#f5f7fb; margin:0; padding:24px; }
+        .card { max-width:680px; margin:40px auto; background:white; border:1px solid #e5e7eb; border-radius:14px; padding:24px; }
+        h1 { margin:0 0 10px; color:#111827; font-size:24px; }
+        p { color:#4b5563; line-height:1.5; }
+        .muted { color:#6b7280; font-size:14px; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>${titulo}</h1>
+        <p>${detalle}</p>
+        <p class="muted">Podés cerrar esta ventana.</p>
+      </div>
+    </body>
+  </html>`;
 }
 
 // Perfil del negocio (dueño logueado)
@@ -419,7 +535,8 @@ app.get('/api/recursos', async (req, res) => {
   }
   try {
     const resultado = await db.query(
-      `SELECT id, nombre, orden FROM recursos WHERE negocio_id = $1 ORDER BY orden ASC, id ASC`,
+      `SELECT id, nombre, orden, hora_apertura, hora_cierre, dias_habilitados
+       FROM recursos WHERE negocio_id = $1 ORDER BY orden ASC, id ASC`,
       [nid]
     );
     res.json(resultado.rows);
@@ -432,7 +549,8 @@ app.get('/api/recursos', async (req, res) => {
 app.get('/api/recursos/propios', verificarToken, async (req, res) => {
   try {
     const resultado = await db.query(
-      `SELECT id, nombre, orden FROM recursos WHERE negocio_id = $1 ORDER BY orden ASC, id ASC`,
+      `SELECT id, nombre, orden, hora_apertura, hora_cierre, dias_habilitados
+       FROM recursos WHERE negocio_id = $1 ORDER BY orden ASC, id ASC`,
       [req.negocioLogueado.id]
     );
     res.json(resultado.rows);
@@ -456,14 +574,84 @@ app.post('/api/recursos', verificarToken, async (req, res) => {
       [req.negocioLogueado.id]
     );
     const orden = maxOrden.rows[0].siguiente;
+    const base = await db.query(
+      `SELECT hora_apertura, hora_cierre FROM negocios WHERE id = $1`,
+      [req.negocioLogueado.id]
+    );
+    const hA = base.rows[0]?.hora_apertura || '09:00';
+    const hC = base.rows[0]?.hora_cierre || '18:00';
     const resultado = await db.query(
-      `INSERT INTO recursos (negocio_id, nombre, orden) VALUES ($1, $2, $3) RETURNING id, nombre, orden`,
-      [req.negocioLogueado.id, nombre, orden]
+      `INSERT INTO recursos (negocio_id, nombre, orden, hora_apertura, hora_cierre, dias_habilitados)
+       VALUES ($1, $2, $3, $4, $5, ARRAY[0,1,2,3,4,5,6])
+       RETURNING id, nombre, orden, hora_apertura, hora_cierre, dias_habilitados`,
+      [req.negocioLogueado.id, nombre, orden, hA, hC]
     );
     res.status(201).json({ mensaje: 'Calendario agregado', recurso: resultado.rows[0] });
   } catch (error) {
     console.error('Error creando recurso:', error);
     res.status(500).json({ error: 'No se pudo crear el calendario' });
+  }
+});
+
+app.put('/api/recursos/:id', verificarToken, async (req, res) => {
+  const rid = Number(req.params.id);
+  if (!Number.isInteger(rid) || rid < 1) {
+    return res.status(400).json({ error: 'ID inválido' });
+  }
+  const negocio_id = req.negocioLogueado.id;
+  const p = req.body || {};
+
+  const campos = [];
+  const valores = [];
+  let idx = 1;
+  const add = (k, v) => {
+    campos.push(`${k} = $${idx++}`);
+    valores.push(v);
+  };
+
+  if (p.nombre !== undefined) {
+    const n = String(p.nombre).trim();
+    if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío' });
+    if (n.length > 120) return res.status(400).json({ error: 'Nombre demasiado largo (máx. 120)' });
+    add('nombre', n);
+  }
+  if (p.hora_apertura !== undefined) {
+    const norm = normalizarHoraInput(p.hora_apertura);
+    if (!norm) return res.status(400).json({ error: 'hora_apertura inválida (HH:MM)' });
+    add('hora_apertura', norm);
+  }
+  if (p.hora_cierre !== undefined) {
+    const norm = normalizarHoraInput(p.hora_cierre);
+    if (!norm) return res.status(400).json({ error: 'hora_cierre inválida (HH:MM)' });
+    add('hora_cierre', norm);
+  }
+  if (p.dias_habilitados !== undefined) {
+    if (!Array.isArray(p.dias_habilitados)) {
+      return res.status(400).json({ error: 'dias_habilitados debe ser un array' });
+    }
+    const limpios = [...new Set(p.dias_habilitados.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort();
+    if (limpios.length === 0) {
+      return res.status(400).json({ error: 'Elegí al menos un día habilitado' });
+    }
+    add('dias_habilitados', limpios);
+  }
+  if (campos.length === 0) {
+    return res.status(400).json({ error: 'No hay datos para actualizar' });
+  }
+
+  valores.push(rid, negocio_id);
+  try {
+    const r = await db.query(
+      `UPDATE recursos SET ${campos.join(', ')}
+       WHERE id = $${idx++} AND negocio_id = $${idx}
+       RETURNING id, nombre, orden, hora_apertura, hora_cierre, dias_habilitados`,
+      valores
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'Calendario no encontrado' });
+    res.json({ mensaje: 'Calendario actualizado', recurso: r.rows[0] });
+  } catch (error) {
+    console.error('Error actualizando recurso:', error);
+    res.status(500).json({ error: 'No se pudo actualizar el calendario' });
   }
 });
 
@@ -510,34 +698,48 @@ app.post('/api/turnos', async (req, res) => {
   if (!Number.isInteger(nid) || nid < 1) {
     return res.status(400).json({ error: 'negocio_id inválido' });
   }
-  const rid = Number(recurso_id);
-  if (!Number.isInteger(rid) || rid < 1) {
-    return res.status(400).json({ error: 'Tenés que elegir un calendario (cancha, profesional, etc.)' });
+  const recursoOpcional =
+    recurso_id === undefined || recurso_id === null || recurso_id === '' ? null : Number(recurso_id);
+  if (recursoOpcional !== null && (!Number.isInteger(recursoOpcional) || recursoOpcional < 1)) {
+    return res.status(400).json({ error: 'recurso_id inválido' });
   }
   if (!fecha_hora || !nombre_cliente) {
     return res.status(400).json({ error: 'Faltan fecha/hora o nombre del cliente' });
   }
 
   try {
-    const resRecurso = await db.query(
-      'SELECT id FROM recursos WHERE id = $1 AND negocio_id = $2',
-      [rid, nid]
-    );
-    if (resRecurso.rows.length === 0) {
-      return res.status(400).json({ error: 'Calendario inválido para este negocio' });
-    }
-
-    const resNegocio = await db.query(
-      'SELECT nombre, direccion FROM negocios WHERE id = $1',
-      [nid]
-    );
+    const resNegocio = await db.query('SELECT nombre, direccion FROM negocios WHERE id = $1', [nid]);
     if (resNegocio.rows.length === 0) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
     const nombreNegocio = resNegocio.rows[0].nombre;
     const direccionNegocio = resNegocio.rows[0].direccion;
 
-    // 2. Buscamos el precio del servicio elegido (si es que eligió uno)
+    let ridAsignado = recursoOpcional;
+    const fechaTurno = String(fecha_hora).slice(0, 10);
+    const horaTurno = String(fecha_hora).slice(11, 16);
+    const diaSemana = diaSemanaDesdeFecha(fechaTurno);
+    const duracionTurno = await db.query(
+      'SELECT duracion_turno_minutos FROM negocios WHERE id = $1',
+      [nid]
+    );
+    const duracionMinutos = Number(duracionTurno.rows[0]?.duracion_turno_minutos || 30);
+
+    if (ridAsignado !== null) {
+      const resRecurso = await db.query(
+        'SELECT id, hora_apertura, hora_cierre, dias_habilitados FROM recursos WHERE id = $1 AND negocio_id = $2',
+        [
+        ridAsignado,
+        nid
+      ]);
+      if (resRecurso.rows.length === 0) {
+        return res.status(400).json({ error: 'Calendario inválido para este negocio' });
+      }
+      if (!recursoHabilitadoEnHorario(resRecurso.rows[0], diaSemana, horaTurno, duracionMinutos)) {
+        return res.status(400).json({ error: 'Ese calendario no atiende en el día/horario elegido' });
+      }
+    }
+
     let precioFinal = 0;
     if (servicio_id) {
       const resServicio = await db.query('SELECT precio FROM servicios WHERE id = $1', [servicio_id]);
@@ -546,26 +748,114 @@ app.post('/api/turnos', async (req, res) => {
       }
     }
 
-    // 3. Guardamos el turno inyectando el servicio_id, el precioFinal y el estado 'pendiente'
-    const query = `
-      INSERT INTO turnos (negocio_id, recurso_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precio, estado) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pendiente') 
+    let resultado;
+    if (ridAsignado !== null) {
+      const query = `
+      INSERT INTO turnos (negocio_id, recurso_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precio, estado)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pendiente')
       RETURNING *;
     `;
-    const valores = [nid, rid, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precioFinal];
-    let resultado;
-    try {
-      resultado = await db.query(query, valores);
-    } catch (insErr) {
-      if (insErr && insErr.code === '23505') {
-        return res.status(409).json({ error: 'Ese horario ya está ocupado en este calendario' });
+      const valores = [
+        nid,
+        ridAsignado,
+        fecha_hora,
+        nombre_cliente,
+        email_cliente,
+        whatsapp_cliente,
+        servicio_id,
+        precioFinal
+      ];
+      try {
+        resultado = await db.query(query, valores);
+      } catch (insErr) {
+        if (insErr && insErr.code === '23505') {
+          return res.status(409).json({ error: 'Ese horario ya está ocupado en este calendario' });
+        }
+        throw insErr;
       }
-      throw insErr;
+    } else {
+      // Modo "cualquiera disponible": intenta reservar el primer calendario libre por orden.
+      let lastErr = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          resultado = await db.query(
+            `
+            INSERT INTO turnos (negocio_id, recurso_id, fecha_hora, nombre_cliente, email_cliente, whatsapp_cliente, servicio_id, precio, estado)
+            SELECT $1, r.id, $2, $3, $4, $5, $6, $7, 'pendiente'
+            FROM recursos r
+            WHERE r.negocio_id = $1
+              AND $8 = ANY(COALESCE(r.dias_habilitados, ARRAY[0,1,2,3,4,5,6]))
+              AND COALESCE(r.hora_apertura, '00:00'::time) <= $9::time
+              AND COALESCE(r.hora_cierre, '23:59'::time) >= ($9::time + ($10::text || ' minutes')::interval)
+              AND NOT EXISTS (
+                SELECT 1
+                FROM turnos t
+                WHERE t.negocio_id = $1
+                  AND t.recurso_id = r.id
+                  AND t.fecha_hora = $2
+                  AND t.estado != 'cancelado'
+              )
+            ORDER BY r.orden ASC, r.id ASC
+            LIMIT 1
+            RETURNING *;
+          `,
+            [
+              nid,
+              fecha_hora,
+              nombre_cliente,
+              email_cliente,
+              whatsapp_cliente,
+              servicio_id,
+              precioFinal,
+              diaSemana,
+              horaTurno,
+              duracionMinutos
+            ]
+          );
+          if (resultado.rows.length > 0) break;
+          return res.status(409).json({ error: 'No hay calendarios disponibles en ese horario' });
+        } catch (insErr) {
+          lastErr = insErr;
+          if (insErr && insErr.code === '23505') {
+            // Carrera entre dos reservas simultáneas: reintenta y busca otro calendario libre.
+            continue;
+          }
+          throw insErr;
+        }
+      }
+      if (!resultado || resultado.rows.length === 0) {
+        if (lastErr && lastErr.code === '23505') {
+          return res.status(409).json({ error: 'Ese horario ya no está disponible. Probá otro.' });
+        }
+        return res.status(409).json({ error: 'No hay calendarios disponibles en ese horario' });
+      }
+      ridAsignado = resultado.rows[0].recurso_id;
     }
 
-    // 4. --- MAGIA DE MAILS ---
-    // (Llamamos a tu función de email.js pasándole los datos reales)
-  // 4. --- MAGIA DE MAILS ---
+    let nombreRecursoAsignado = null;
+    if (resultado?.rows?.[0]?.recurso_id) {
+      const resNombreRecurso = await db.query('SELECT nombre FROM recursos WHERE id = $1', [
+        resultado.rows[0].recurso_id
+      ]);
+      if (resNombreRecurso.rows.length > 0) {
+        nombreRecursoAsignado = resNombreRecurso.rows[0].nombre;
+      }
+    }
+
+    const publicApiBase = getPublicApiBase();
+    const tokenConfirmar = jwt.sign(
+      { tid: resultado.rows[0].id, act: 'confirmar' },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+    const tokenCancelar = jwt.sign(
+      { tid: resultado.rows[0].id, act: 'cancelar' },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+    const confirmarUrl = `${publicApiBase}/api/public/turnos/confirmar?token=${encodeURIComponent(tokenConfirmar)}`;
+    const cancelarUrl = `${publicApiBase}/api/public/turnos/cancelar?token=${encodeURIComponent(tokenCancelar)}`;
+
     // 5. --- MAGIA DE WHATSAPP SEMI-AUTOMÁTICO ---
     // (Esto se ejecuta rapidísimo, así que lo dejamos primero)
     let linkWhatsApp = null;
@@ -592,7 +882,10 @@ app.post('/api/turnos', async (req, res) => {
       // Fíjate que le sacamos el "await" del principio y le agregamos el ".catch" al final
       enviarMailConfirmacion(email_cliente, nombre_cliente, fecha_hora, nombreNegocio, {
         turnoId: resultado.rows[0].id,
-        direccion: direccionNegocio
+        direccion: direccionNegocio,
+        recursoNombre: nombreRecursoAsignado,
+        confirmarUrl,
+        cancelarUrl
       }).catch(() => console.log('⚠️ Aviso: no se pudo enviar el correo de confirmación.'));
     } else {
       console.log('⚠️ ALERTA: email_cliente llegó vacío, se cancela el envío.');
@@ -616,7 +909,7 @@ app.get('/api/turnos', verificarToken, async (req, res) => {
 
     const query = `
       SELECT t.id, t.servicio_id, t.recurso_id, t.fecha_hora, t.nombre_cliente, t.email_cliente, t.whatsapp_cliente,
-             t.estado, t.precio,
+             t.estado, t.precio, t.asistencia_confirmada, t.asistencia_confirmada_at,
              s.nombre AS servicio_nombre,
              r.nombre AS recurso_nombre
       FROM turnos t
@@ -714,19 +1007,27 @@ app.put('/api/turnos/:id/cancelar', verificarToken, async (req, res) => {
 
 app.get('/api/turnos/disponibles', async (req, res) => {
   const { negocio_id, fecha, recurso_id } = req.query;
+  let recursoObjetivo = null;
 
   if (!negocio_id || !fecha) {
     return res.status(400).json({ error: 'Faltan parámetros: negocio_id y fecha' });
   }
-  const rid = Number(recurso_id);
-  if (!Number.isInteger(rid) || rid < 1) {
-    return res.status(400).json({ error: 'Falta recurso_id (calendario) válido' });
+  const rid =
+    recurso_id === undefined || recurso_id === null || recurso_id === '' ? null : Number(recurso_id);
+  if (rid !== null && (!Number.isInteger(rid) || rid < 1)) {
+    return res.status(400).json({ error: 'recurso_id inválido' });
   }
 
   try {
-    const chk = await db.query('SELECT id FROM recursos WHERE id = $1 AND negocio_id = $2', [rid, negocio_id]);
-    if (chk.rows.length === 0) {
-      return res.status(404).json({ error: 'Calendario no encontrado para este negocio' });
+    if (rid !== null) {
+      const chk = await db.query(
+        'SELECT id, hora_apertura, hora_cierre, dias_habilitados FROM recursos WHERE id = $1 AND negocio_id = $2',
+        [rid, negocio_id]
+      );
+      if (chk.rows.length === 0) {
+        return res.status(404).json({ error: 'Calendario no encontrado para este negocio' });
+      }
+      recursoObjetivo = chk.rows[0];
     }
 
     // 1. Buscamos la configuración EXACTA de este negocio
@@ -764,8 +1065,11 @@ app.get('/api/turnos/disponibles', async (req, res) => {
     // 3. Armamos todos los horarios posibles de ese local
     const horariosPosibles = generarGrilla(config.hora_apertura, config.hora_cierre, config.duracion_turno_minutos);
 
-    // 4. Buscamos en SQL los horarios que YA ESTÁN OCUPADOS ese día (solo en este calendario)
-    const queryOcupados = `
+    const diaSemana = diaSemanaDesdeFecha(fecha);
+    let horariosLibres = [];
+    if (rid !== null) {
+      // Modo calendario específico
+      const queryOcupados = `
       SELECT TO_CHAR(fecha_hora, 'HH24:MI') as hora_ocupada
       FROM turnos
       WHERE negocio_id = $1 
@@ -773,11 +1077,52 @@ app.get('/api/turnos/disponibles', async (req, res) => {
         AND DATE(fecha_hora) = $2::date
         AND estado != 'cancelado'
     `;
-    const resOcupados = await db.query(queryOcupados, [negocio_id, fecha, rid]);
-    const turnosOcupados = resOcupados.rows.map(row => row.hora_ocupada);
-
-    // 5. Filtramos la grilla: dejamos solo los horarios que no están en la lista de ocupados
-    const horariosLibres = horariosPosibles.filter(hora => !turnosOcupados.includes(hora));
+      const resOcupados = await db.query(queryOcupados, [negocio_id, fecha, rid]);
+      const turnosOcupados = resOcupados.rows.map(row => row.hora_ocupada);
+      horariosLibres = horariosPosibles.filter(
+        hora =>
+          recursoHabilitadoEnHorario(recursoObjetivo, diaSemana, hora, config.duracion_turno_minutos) &&
+          !turnosOcupados.includes(hora)
+      );
+    } else {
+      // Modo "cualquiera disponible": libre si existe al menos un calendario libre en esa hora.
+      const recursosRes = await db.query(
+        'SELECT id, hora_apertura, hora_cierre, dias_habilitados FROM recursos WHERE negocio_id = $1',
+        [negocio_id]
+      );
+      const recursos = recursosRes.rows || [];
+      const totalRecursos = recursos.length;
+      if (totalRecursos === 0) {
+        return res.json({
+          fecha: fecha,
+          configuracion_local: {
+            apertura: config.hora_apertura,
+            cierre: config.hora_cierre,
+            duracion_minutos: config.duracion_turno_minutos
+          },
+          disponibles: []
+        });
+      }
+      const ocupadosPorHoraRes = await db.query(
+        `
+        SELECT TO_CHAR(fecha_hora, 'HH24:MI') AS hora_ocupada, COUNT(DISTINCT recurso_id)::int AS ocupados
+        FROM turnos
+        WHERE negocio_id = $1
+          AND DATE(fecha_hora) = $2::date
+          AND estado != 'cancelado'
+        GROUP BY TO_CHAR(fecha_hora, 'HH24:MI')
+      `,
+        [negocio_id, fecha]
+      );
+      const ocupadosMap = new Map(ocupadosPorHoraRes.rows.map(r => [r.hora_ocupada, r.ocupados]));
+      horariosLibres = horariosPosibles.filter(hora => {
+        const habilitados = recursos.filter((r) =>
+          recursoHabilitadoEnHorario(r, diaSemana, hora, config.duracion_turno_minutos)
+        );
+        if (habilitados.length === 0) return false;
+        return (ocupadosMap.get(hora) || 0) < habilitados.length;
+      });
+    }
 
     res.json({
       fecha: fecha,

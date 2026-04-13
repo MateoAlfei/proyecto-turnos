@@ -18,9 +18,28 @@ const transporter = nodemailer.createTransport({
 const enviarMailConfirmacion = async (emailCliente, nombreCliente, fechaHora, nombreNegocio, extra = {}) => {
   const turnoId = extra.turnoId;
   const direccion = extra.direccion;
+  const recursoNombre = extra.recursoNombre;
+  const confirmarUrl = extra.confirmarUrl;
+  const cancelarUrl = extra.cancelarUrl;
   const lugar = direccion && String(direccion).trim()
     ? escapeHtml(direccion)
     : escapeHtml(nombreNegocio);
+  const detalleRecurso = recursoNombre && String(recursoNombre).trim()
+    ? `<p>👤 <strong>Profesional / Calendario:</strong> ${escapeHtml(recursoNombre)}</p>`
+    : '';
+  const accionesHtml =
+    confirmarUrl && cancelarUrl
+      ? `
+      <div style="margin: 20px 0; text-align: center;">
+        <a href="${escapeHtml(confirmarUrl)}" style="display: inline-block; background: #10b981; color: #fff; text-decoration: none; padding: 10px 16px; border-radius: 8px; font-weight: bold; margin-right: 8px;">
+          Confirmar asistencia
+        </a>
+        <a href="${escapeHtml(cancelarUrl)}" style="display: inline-block; background: #ef4444; color: #fff; text-decoration: none; padding: 10px 16px; border-radius: 8px; font-weight: bold;">
+          Cancelar turno
+        </a>
+      </div>
+    `
+      : '';
 
   try {
     const plantillaHTML = `
@@ -36,10 +55,12 @@ const enviarMailConfirmacion = async (emailCliente, nombreCliente, fechaHora, no
                     </p>
                     <div style="text-align: left; background-color: #f9f9f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
                         <p>📅 <strong>Fecha y hora:</strong> ${escapeHtml(fechaHora)}</p>
+                        ${detalleRecurso}
                         <p>📍 <strong>Lugar:</strong> ${lugar}</p>
                     </div>
+                    ${accionesHtml}
                     <p style="color: #666; font-size: 14px; text-align: center;">
-                      Para reprogramar o cancelar, contactá directamente al local.
+                      Si no usás los botones, podés reprogramar o cancelar contactando al local.
                     </p>
                 </div>
             </div>

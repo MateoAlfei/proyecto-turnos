@@ -17,6 +17,15 @@ const MESES = [
   { v: '11', l: 'Noviembre' },
   { v: '12', l: 'Diciembre' }
 ];
+const DIAS_SEMANA = [
+  { v: 0, l: 'Dom' },
+  { v: 1, l: 'Lun' },
+  { v: 2, l: 'Mar' },
+  { v: 3, l: 'Mie' },
+  { v: 4, l: 'Jue' },
+  { v: 5, l: 'Vie' },
+  { v: 6, l: 'Sab' }
+];
 
 /** YYYY-MM-DD en calendario local (para comparar con fecha_hora del turno). */
 function fechaLocalKey(val) {
@@ -94,6 +103,13 @@ function badgeEstado(estado) {
   return `${base} bg-amber-100 text-amber-800`;
 }
 
+function badgeAsistencia(confirmada) {
+  const base = 'text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap';
+  return confirmada
+    ? `${base} bg-blue-100 text-blue-800`
+    : `${base} bg-gray-100 text-gray-600`;
+}
+
 export default function Dashboard() {
   const [turnos, setTurnos] = useState([]);
   const [servicios, setServicios] = useState([]);
@@ -106,8 +122,10 @@ export default function Dashboard() {
   const [cargandoRecursos, setCargandoRecursos] = useState(true);
   const [nuevoRecurso, setNuevoRecurso] = useState({ nombre: '' });
   const [guardandoRecurso, setGuardandoRecurso] = useState(false);
+  const [guardandoReglasRecurso, setGuardandoReglasRecurso] = useState({});
   const [filtroAgenda, setFiltroAgenda] = useState('hoy');
   const [filtroRecurso, setFiltroRecurso] = useState('todos');
+  const [filtroAsistencia, setFiltroAsistencia] = useState('todos');
   const ahora = new Date();
   const [mesSel, setMesSel] = useState(String(ahora.getMonth() + 1));
   const [anioSel, setAnioSel] = useState(String(ahora.getFullYear()));
@@ -133,8 +151,13 @@ export default function Dashboard() {
       const id = Number(filtroRecurso);
       if (Number.isInteger(id)) t = t.filter((x) => x.recurso_id === id);
     }
+    if (filtroAsistencia === 'no_confirmados') {
+      t = t.filter((x) => !x.asistencia_confirmada);
+    } else if (filtroAsistencia === 'confirmados') {
+      t = t.filter((x) => !!x.asistencia_confirmada);
+    }
     return t;
-  }, [turnos, filtroAgenda, filtroRecurso]);
+  }, [turnos, filtroAgenda, filtroRecurso, filtroAsistencia]);
 
   const cargarTurnos = useCallback(async () => {
     const token = localStorage.getItem('turnero_token');
@@ -187,7 +210,16 @@ export default function Dashboard() {
       const res = await fetch(`${API_BASE}/api/recursos/propios`, { headers: getAuthHeaders() });
       if (res.status === 401 || res.status === 403) return;
       const datos = await res.json();
-      setRecursos(Array.isArray(datos) ? datos : []);
+      setRecursos(
+        Array.isArray(datos)
+          ? datos.map((r) => ({
+              ...r,
+              hora_apertura: (r.hora_apertura || '09:00').toString().slice(0, 5),
+              hora_cierre: (r.hora_cierre || '18:00').toString().slice(0, 5),
+              dias_habilitados: Array.isArray(r.dias_habilitados) ? r.dias_habilitados.map(Number) : [0, 1, 2, 3, 4, 5, 6]
+            }))
+          : []
+      );
     } catch {
       setRecursos([]);
     } finally {
@@ -429,6 +461,56 @@ export default function Dashboard() {
     }
   };
 
+  const toggleDiaRecurso = (rid, dia) => {
+    setRecursos((prev) =>
+      prev.map((r) => {
+        if (r.id !== rid) return r;
+        const dias = new Set(Array.isArray(r.dias_habilitados) ? r.dias_habilitados : []);
+        if (dias.has(dia)) dias.delete(dia);
+        else dias.add(dia);
+        return { ...r, dias_habilitados: Array.from(dias).sort((a, b) => a - b) };
+      })
+    );
+  };
+
+  const cambiarCampoRecurso = (rid, campo, valor) => {
+    setRecursos((prev) => prev.map((r) => (r.id === rid ? { ...r, [campo]: valor } : r)));
+  };
+
+  const guardarReglasRecurso = async (r) => {
+    if (!r.hora_apertura || !r.hora_cierre) {
+      alert('Completá apertura y cierre');
+      return;
+    }
+    if (!Array.isArray(r.dias_habilitados) || r.dias_habilitados.length === 0) {
+      alert('Elegí al menos un día habilitado');
+      return;
+    }
+    setGuardandoReglasRecurso((x) => ({ ...x, [r.id]: true }));
+    try {
+      const res = await fetch(`${API_BASE}/api/recursos/${r.id}`, {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          nombre: r.nombre,
+          hora_apertura: r.hora_apertura,
+          hora_cierre: r.hora_cierre,
+          dias_habilitados: r.dias_habilitados
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'No se pudo guardar el calendario');
+        return;
+      }
+      setRecursos((prev) => prev.map((x) => (x.id === r.id ? { ...x, ...data.recurso } : x)));
+    } catch {
+      alert('Error de conexión');
+    } finally {
+      setGuardandoReglasRecurso((x) => ({ ...x, [r.id]: false }));
+    }
+  };
+
   const eliminarServicio = async (id) => {
     if (!window.confirm('¿Eliminar este servicio del catálogo?')) return;
     try {
@@ -603,6 +685,16 @@ export default function Dashboard() {
                   ))}
                 </select>
               )}
+              <select
+                value={filtroAsistencia}
+                onChange={(e) => setFiltroAsistencia(e.target.value)}
+                className="border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-medium bg-white max-w-[220px]"
+                aria-label="Filtrar por asistencia"
+              >
+                <option value="todos">Asistencia: todos</option>
+                <option value="no_confirmados">Solo sin confirmar</option>
+                <option value="confirmados">Solo confirmados</option>
+              </select>
               <div className="flex rounded-lg border-2 border-gray-200 overflow-hidden flex-wrap sm:flex-nowrap">
                 {[
                   { id: 'hoy', label: 'Hoy' },
@@ -642,6 +734,7 @@ export default function Dashboard() {
                 <tr className="bg-white border-b text-gray-500 text-sm uppercase tracking-wider">
                   <th className="p-4 font-semibold">Estado</th>
                   <th className="p-4 font-semibold">Calendario</th>
+                  <th className="p-4 font-semibold">Asistencia</th>
                   <th className="p-4 font-semibold">Horario</th>
                   <th className="p-4 font-semibold">Cliente</th>
                   <th className="p-4 font-semibold">Servicio</th>
@@ -652,13 +745,13 @@ export default function Dashboard() {
               <tbody className="divide-y divide-gray-100">
                 {cargando ? (
                   <tr>
-                    <td colSpan="7" className="p-8 text-center text-gray-400">
+                    <td colSpan="8" className="p-8 text-center text-gray-400">
                       Cargando agenda…
                     </td>
                   </tr>
                 ) : turnosVisibles.length === 0 ? (
                   <tr>
-                    <td colSpan="7" className="p-8 text-center text-gray-500">
+                    <td colSpan="8" className="p-8 text-center text-gray-500">
                       {turnos.length > 0
                         ? filtroAgenda === 'hoy'
                           ? 'No hay turnos para hoy.'
@@ -678,6 +771,18 @@ export default function Dashboard() {
                         </td>
                         <td className="p-4 text-gray-600 text-sm font-medium">
                           {turno.recurso_nombre || '—'}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex flex-col gap-1">
+                            <span className={badgeAsistencia(!!turno.asistencia_confirmada)}>
+                              {turno.asistencia_confirmada ? 'Confirmada' : 'Sin confirmar'}
+                            </span>
+                            {turno.asistencia_confirmada_at ? (
+                              <span className="text-[11px] text-gray-400">
+                                {new Date(turno.asistencia_confirmada_at).toLocaleString('es-AR')}
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="p-4 font-bold text-gray-800 whitespace-nowrap">{turno.fecha_hora}</td>
                         <td className="p-4 font-medium text-gray-600">{turno.nombre_cliente}</td>
@@ -751,8 +856,7 @@ export default function Dashboard() {
           <div className="p-6 border-b border-gray-200 bg-gray-50">
             <h2 className="text-xl font-bold text-gray-700">Calendarios</h2>
             <p className="text-sm text-gray-500 mt-1">
-              Un calendario por cancha, peluquero o sala. Los clientes eligen uno al reservar; los horarios libres son
-              por calendario.
+              Un calendario por cancha, peluquero o sala. Acá también definís días y horarios de atención por cada uno.
             </p>
           </div>
           <div className="p-6">
@@ -784,16 +888,70 @@ export default function Dashboard() {
                 {recursos.map((r) => (
                   <li
                     key={r.id}
-                    className="flex justify-between items-center gap-4 px-4 py-3 bg-white hover:bg-gray-50"
+                    className="px-4 py-4 bg-white hover:bg-gray-50"
                   >
-                    <span className="font-semibold text-gray-800">{r.nombre}</span>
-                    <button
-                      type="button"
-                      onClick={() => eliminarRecurso(r.id)}
-                      className="text-red-500 hover:text-red-700 text-sm font-bold shrink-0"
-                    >
-                      Eliminar
-                    </button>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                        <input
+                          type="text"
+                          value={r.nombre}
+                          onChange={(e) => cambiarCampoRecurso(r.id, 'nombre', e.target.value)}
+                          className="border-2 border-gray-200 rounded-lg px-3 py-2 font-semibold text-gray-800 focus:border-violet-500 outline-none"
+                        />
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="text-gray-500">Apertura</span>
+                          <input
+                            type="time"
+                            value={r.hora_apertura}
+                            onChange={(e) => cambiarCampoRecurso(r.id, 'hora_apertura', e.target.value)}
+                            className="border-2 border-gray-200 rounded-lg px-2 py-1 focus:border-violet-500 outline-none"
+                          />
+                          <span className="text-gray-500">Cierre</span>
+                          <input
+                            type="time"
+                            value={r.hora_cierre}
+                            onChange={(e) => cambiarCampoRecurso(r.id, 'hora_cierre', e.target.value)}
+                            className="border-2 border-gray-200 rounded-lg px-2 py-1 focus:border-violet-500 outline-none"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {DIAS_SEMANA.map((d) => {
+                          const on = Array.isArray(r.dias_habilitados) && r.dias_habilitados.includes(d.v);
+                          return (
+                            <button
+                              key={d.v}
+                              type="button"
+                              onClick={() => toggleDiaRecurso(r.id, d.v)}
+                              className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                                on
+                                  ? 'bg-violet-100 text-violet-800 border-violet-300'
+                                  : 'bg-white text-gray-500 border-gray-300'
+                              }`}
+                            >
+                              {d.l}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          onClick={() => guardarReglasRecurso(r)}
+                          disabled={!!guardandoReglasRecurso[r.id]}
+                          className="text-violet-700 hover:text-violet-900 text-sm font-bold disabled:text-gray-400"
+                        >
+                          {guardandoReglasRecurso[r.id] ? 'Guardando…' : 'Guardar reglas'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => eliminarRecurso(r.id)}
+                          className="text-red-500 hover:text-red-700 text-sm font-bold"
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </div>
                   </li>
                 ))}
               </ul>

@@ -12,20 +12,46 @@ const migrar = async () => {
         id SERIAL PRIMARY KEY,
         negocio_id INTEGER NOT NULL REFERENCES negocios(id) ON DELETE CASCADE,
         nombre VARCHAR(120) NOT NULL,
-        orden INTEGER NOT NULL DEFAULT 0
+        orden INTEGER NOT NULL DEFAULT 0,
+        hora_apertura TIME,
+        hora_cierre TIME,
+        dias_habilitados INTEGER[] DEFAULT ARRAY[0,1,2,3,4,5,6]
       );
     `);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_recursos_negocio ON recursos(negocio_id);`);
+    await db.query(`ALTER TABLE recursos ADD COLUMN IF NOT EXISTS hora_apertura TIME;`);
+    await db.query(`ALTER TABLE recursos ADD COLUMN IF NOT EXISTS hora_cierre TIME;`);
+    await db.query(`ALTER TABLE recursos ADD COLUMN IF NOT EXISTS dias_habilitados INTEGER[] DEFAULT ARRAY[0,1,2,3,4,5,6];`);
 
     await db.query(`ALTER TABLE turnos ADD COLUMN IF NOT EXISTS recurso_id INTEGER REFERENCES recursos(id);`);
 
     const { rows: negocios } = await db.query('SELECT id FROM negocios');
     for (const n of negocios) {
+      // Semillas por negocio: si un recurso no tiene reglas explícitas, hereda horario general del negocio.
+      await db.query(
+        `
+        UPDATE recursos r
+        SET hora_apertura = COALESCE(r.hora_apertura, b.hora_apertura),
+            hora_cierre = COALESCE(r.hora_cierre, b.hora_cierre),
+            dias_habilitados = COALESCE(r.dias_habilitados, ARRAY[0,1,2,3,4,5,6])
+        FROM negocios b
+        WHERE r.negocio_id = b.id AND r.negocio_id = $1
+      `,
+        [n.id]
+      );
+
       const c = await db.query('SELECT COUNT(*)::int AS n FROM recursos WHERE negocio_id = $1', [n.id]);
       if (c.rows[0].n > 0) continue;
-      const ins = await db.query(
-        `INSERT INTO recursos (negocio_id, nombre, orden) VALUES ($1, 'Principal', 0) RETURNING id`,
+      const base = await db.query(
+        `SELECT hora_apertura, hora_cierre FROM negocios WHERE id = $1`,
         [n.id]
+      );
+      const hA = base.rows[0]?.hora_apertura || '09:00';
+      const hC = base.rows[0]?.hora_cierre || '18:00';
+      const ins = await db.query(
+        `INSERT INTO recursos (negocio_id, nombre, orden, hora_apertura, hora_cierre, dias_habilitados)
+         VALUES ($1, 'Principal', 0, $2, $3, ARRAY[0,1,2,3,4,5,6]) RETURNING id`,
+        [n.id, hA, hC]
       );
       const rid = ins.rows[0].id;
       await db.query('UPDATE turnos SET recurso_id = $1 WHERE negocio_id = $2 AND recurso_id IS NULL', [
