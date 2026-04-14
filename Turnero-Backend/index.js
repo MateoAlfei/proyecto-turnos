@@ -169,29 +169,38 @@ app.post('/api/chat-bot', async (req, res) => {
   const { mensaje, whatsapp_cliente, negocio_id } = req.body;
 
   try {
+    // 1. EL TRUCO MULTI-TENANT: Buscamos para quién estamos trabajando
+    const resNegocio = await db.query('SELECT nombre FROM negocios WHERE id = $1', [negocio_id]);
+    
+    if (resNegocio.rows.length === 0) {
+      return res.status(404).json({ error: "Ese negocio no existe en la base de datos." });
+    }
+    const nombreNegocio = resNegocio.rows[0].nombre;
+
     const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.5-flash", 
+      model: "gemini-2.0-flash", // Usá el modelo que te anduvo bien
       tools: tools 
     });
 
     const chat = model.startChat();
     const fechaHoy = new Date().toISOString().split('T')[0]; 
     
-    const promptSistema = `Sos el asistente virtual del negocio. 
+    // 2. PROMPT UNIVERSAL (Ya no dice Peluquería)
+    const promptSistema = `Sos el recepcionista virtual de "${nombreNegocio}". 
     Hoy es la fecha: ${fechaHoy}.
     Usá un tono amable, conciso, y un estilo argentino informal.
-    Para dar turnos, SIEMPRE consultá primero los servicios y la disponibilidad.
+    Tu objetivo es ayudar a los clientes a reservar turnos.
+    Para dar turnos, SIEMPRE consultá primero los servicios y la disponibilidad usando tus herramientas.
     ID de este negocio: ${negocio_id}. 
     WhatsApp del cliente: ${whatsapp_cliente}.`;
 
     let result = await chat.sendMessage(`${promptSistema}\n\nCliente dice: ${mensaje}`);
     let response = result.response;
 
-    // 2. EL FRENO: Le ponemos un límite de 5 vueltas máximo
     let vueltas = 0; 
 
     while (response.functionCalls() && vueltas < 5) {
-      vueltas++; // Sumamos una vuelta
+      vueltas++; 
       const calls = response.functionCalls();
       const functionResponses = []; 
 
@@ -229,15 +238,10 @@ app.post('/api/chat-bot', async (req, res) => {
         });
       }
 
-      // 3. LA PAUSA: Frenamos 1.5 segundos para que Google no nos rete
       await esperar(1500); 
 
       result = await chat.sendMessage(functionResponses);
       response = result.response;
-    }
-
-    if (vueltas >= 5) {
-      console.log("⚠️ Se cortó el bucle por seguridad para no gastar la API.");
     }
 
     res.json({ respuesta: response.text() });
