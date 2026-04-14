@@ -77,12 +77,13 @@ export default function ReservaCliente() {
     return Number(recursoSeleccionado);
   }, [recursoSeleccionado]);
 
-  const cargarDisponibilidad = (nuevaFecha, recursoValue) => {
-    if (!negocio?.id || !nuevaFecha || !recursoValue) return;
+  const cargarDisponibilidad = (nuevaFecha, recursoValue, servicioValue) => {
+    if (!negocio?.id || !nuevaFecha || !recursoValue || !servicioValue) return;
     setCargandoHorarios(true);
     const qs = new URLSearchParams({
       negocio_id: String(negocio.id),
-      fecha: nuevaFecha
+      fecha: nuevaFecha,
+      servicio_id: String(servicioValue)
     });
     if (recursoValue !== 'any') {
       qs.set('recurso_id', String(recursoValue));
@@ -104,8 +105,8 @@ export default function ReservaCliente() {
     const nuevaFecha = e.target.value;
     setFechaElegida(nuevaFecha);
     setHoraSeleccionada(null);
-    if (!negocio?.id || !nuevaFecha || !recursoSeleccionado) return;
-    cargarDisponibilidad(nuevaFecha, recursoSeleccionado);
+    if (!negocio?.id || !nuevaFecha || !recursoSeleccionado || !servicioSeleccionado) return;
+    cargarDisponibilidad(nuevaFecha, recursoSeleccionado, servicioSeleccionado);
   };
 
   const handleInputChange = (e) => {
@@ -199,7 +200,13 @@ export default function ReservaCliente() {
                 {servicios.map((servicio) => (
                   <div
                     key={servicio.id}
-                    onClick={() => setServicioSeleccionado(servicio.id)}
+                    onClick={() => {
+                      setServicioSeleccionado(servicio.id);
+                      setHoraSeleccionada(null);
+                      if (fechaElegida && recursoSeleccionado) {
+                        cargarDisponibilidad(fechaElegida, recursoSeleccionado, servicio.id);
+                      }
+                    }}
                     className={`border-2 rounded-xl p-4 cursor-pointer transition-colors ${
                       servicioSeleccionado === servicio.id
                         ? 'border-blue-600 bg-blue-50'
@@ -208,6 +215,7 @@ export default function ReservaCliente() {
                   >
                     <h3 className="font-bold text-gray-700">{servicio.nombre}</h3>
                     <p className="font-medium mt-1 text-gray-500">${servicio.precio}</p>
+                    <p className="text-xs mt-1 text-gray-400">Duración: {servicio.duracion_minutos || negocio?.duracion_turno_minutos || 30} min</p>
                   </div>
                 ))}
               </div>

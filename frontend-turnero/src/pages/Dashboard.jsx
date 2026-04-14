@@ -110,13 +110,26 @@ function badgeAsistencia(confirmada) {
     : `${base} bg-gray-100 text-gray-600`;
 }
 
+function formatTurnoFechaHora(fechaHora) {
+  if (!fechaHora) return '—';
+  const f = new Date(String(fechaHora).replace(' ', 'T'));
+  if (Number.isNaN(f.getTime())) return String(fechaHora);
+  return f.toLocaleString('es-AR', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
 export default function Dashboard() {
   const [turnos, setTurnos] = useState([]);
   const [servicios, setServicios] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [cargandoServicios, setCargandoServicios] = useState(true);
   const [nombreNegocio, setNombreNegocio] = useState('');
-  const [nuevoServicio, setNuevoServicio] = useState({ nombre: '', precio: '' });
+  const [nuevoServicio, setNuevoServicio] = useState({ nombre: '', precio: '', duracion_minutos: '30' });
   const [guardandoServicio, setGuardandoServicio] = useState(false);
   const [recursos, setRecursos] = useState([]);
   const [cargandoRecursos, setCargandoRecursos] = useState(true);
@@ -348,8 +361,9 @@ export default function Dashboard() {
     e.preventDefault();
     const nombre = nuevoServicio.nombre.trim();
     const precio = nuevoServicio.precio;
-    if (!nombre || precio === '') {
-      alert('Completá nombre y precio');
+    const duracion = Number(nuevoServicio.duracion_minutos);
+    if (!nombre || precio === '' || !Number.isInteger(duracion) || duracion < 5) {
+      alert('Completá nombre, precio y duración válida');
       return;
     }
     setGuardandoServicio(true);
@@ -357,14 +371,14 @@ export default function Dashboard() {
       const res = await fetch(`${API_BASE}/api/servicios`, {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ nombre, precio: Number(precio) })
+        body: JSON.stringify({ nombre, precio: Number(precio), duracion_minutos: duracion })
       });
       const data = await res.json();
       if (!res.ok) {
         alert(data.error || 'No se pudo crear el servicio');
         return;
       }
-      setNuevoServicio({ nombre: '', precio: '' });
+      setNuevoServicio({ nombre: '', precio: '', duracion_minutos: '30' });
       await cargarServicios();
     } catch {
       alert('Error de conexión');
@@ -530,19 +544,22 @@ export default function Dashboard() {
   };
 
   const textoWhatsApp = (turno) =>
-    `¡Hola ${turno.nombre_cliente}! 💈\nTe confirmamos tu turno para el día y hora: ${turno.fecha_hora} en ${nombreNegocio}.\n¡Te esperamos!`;
+    `¡Hola ${turno.nombre_cliente}! 💈\nTe confirmamos tu turno para ${formatTurnoFechaHora(turno.fecha_hora)} en ${nombreNegocio}.\n¡Te esperamos!`;
 
   const textoWhatsAppRetencion = (nombre) =>
     `¡Hola ${nombre}! Hace un tiempo que no te vemos en ${nombreNegocio}. ¿Te gustaría reservar un turno?`;
 
-  const maxCantidadHora =
-    metricas?.distribucion_horaria?.length > 0
-      ? Math.max(...metricas.distribucion_horaria.map((r) => Number(r.cantidad_turnos) || 0), 1)
+  const maxTotalServicio =
+    metricas?.distribucion_servicios?.length > 0
+      ? Math.max(...metricas.distribucion_servicios.map((r) => Number(r.total_facturado) || 0), 1)
       : 1;
 
   const resumenMes = metricas?.resumen;
-  const facturadoNum = resumenMes ? Number(resumenMes.total_facturado) : 0;
-  const turnosCompletadosMes = resumenMes ? Number(resumenMes.total_turnos) : 0;
+  const facturadoAnual = resumenMes ? Number(resumenMes.total_anual) : 0;
+  const facturadoMensual = resumenMes ? Number(resumenMes.total_mensual) : 0;
+  const facturadoSemanal = resumenMes ? Number(resumenMes.total_semanal) : 0;
+  const facturadoDiario = resumenMes ? Number(resumenMes.total_diario) : 0;
+  const turnosCompletadosMes = resumenMes ? Number(resumenMes.turnos_mes) : 0;
 
   return (
     <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
@@ -599,37 +616,55 @@ export default function Dashboard() {
             {cargandoMetricas ? (
               <p className="text-gray-400 text-sm animate-pulse">Cargando métricas…</p>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4">
-                  <p className="text-sm text-emerald-800 font-medium">Facturación (turnos completados)</p>
+                  <p className="text-sm text-emerald-800 font-medium">Facturación anual</p>
                   <p className="text-2xl font-bold text-emerald-900 mt-1">
-                    {facturadoNum.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' })}
+                    {facturadoAnual.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' })}
                   </p>
-                  <p className="text-xs text-emerald-700 mt-1">{turnosCompletadosMes} turnos en el período</p>
                 </div>
-                <div className="sm:col-span-2 bg-slate-50 border border-slate-100 rounded-xl p-4">
-                  <p className="text-sm font-semibold text-slate-700 mb-3">Horarios con más turnos (histórico, no cancelados)</p>
-                  {metricas?.distribucion_horaria?.length > 0 ? (
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
+                  <p className="text-sm text-blue-800 font-medium">Facturación mensual</p>
+                  <p className="text-2xl font-bold text-blue-900 mt-1">
+                    {facturadoMensual.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' })}
+                  </p>
+                  <p className="text-xs text-blue-700 mt-1">{turnosCompletadosMes} turnos completados</p>
+                </div>
+                <div className="bg-violet-50 border border-violet-100 rounded-xl p-4">
+                  <p className="text-sm text-violet-800 font-medium">Facturación semanal</p>
+                  <p className="text-2xl font-bold text-violet-900 mt-1">
+                    {facturadoSemanal.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' })}
+                  </p>
+                </div>
+                <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                  <p className="text-sm text-amber-800 font-medium">Facturación diaria</p>
+                  <p className="text-2xl font-bold text-amber-900 mt-1">
+                    {facturadoDiario.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' })}
+                  </p>
+                </div>
+                <div className="sm:col-span-2 lg:col-span-4 bg-slate-50 border border-slate-100 rounded-xl p-4">
+                  <p className="text-sm font-semibold text-slate-700 mb-3">Servicios más rentables (histórico, completados)</p>
+                  {metricas?.distribucion_servicios?.length > 0 ? (
                     <ul className="space-y-2">
-                      {metricas.distribucion_horaria.slice(0, 6).map((row) => {
-                        const n = Number(row.cantidad_turnos) || 0;
-                        const pct = Math.round((n / maxCantidadHora) * 100);
+                      {metricas.distribucion_servicios.map((row) => {
+                        const total = Number(row.total_facturado) || 0;
+                        const turnos = Number(row.cantidad_turnos) || 0;
+                        const pct = Math.round((total / maxTotalServicio) * 100);
                         return (
-                          <li key={row.hora} className="flex items-center gap-3 text-sm">
-                            <span className="w-14 font-mono text-slate-600 shrink-0">{row.hora}</span>
+                          <li key={row.servicio} className="flex items-center gap-3 text-sm">
+                            <span className="w-44 text-slate-700 truncate shrink-0">{row.servicio}</span>
                             <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-slate-600 rounded-full transition-all"
-                                style={{ width: `${pct}%` }}
-                              />
+                              <div className="h-full bg-slate-600 rounded-full transition-all" style={{ width: `${pct}%` }} />
                             </div>
-                            <span className="text-slate-500 w-8 text-right shrink-0">{n}</span>
+                            <span className="text-slate-500 w-44 text-right shrink-0">
+                              {total.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' })} · {turnos} turnos
+                            </span>
                           </li>
                         );
                       })}
                     </ul>
                   ) : (
-                    <p className="text-slate-500 text-sm">Todavía no hay datos de horarios.</p>
+                    <p className="text-slate-500 text-sm">Todavía no hay datos de servicios.</p>
                   )}
                 </div>
               </div>
@@ -784,7 +819,7 @@ export default function Dashboard() {
                             ) : null}
                           </div>
                         </td>
-                        <td className="p-4 font-bold text-gray-800 whitespace-nowrap">{turno.fecha_hora}</td>
+                        <td className="p-4 font-bold text-gray-800 whitespace-nowrap">{formatTurnoFechaHora(turno.fecha_hora)}</td>
                         <td className="p-4 font-medium text-gray-600">{turno.nombre_cliente}</td>
                         <td className="p-4 text-gray-600 text-sm">
                           {turno.servicio_nombre ? (
@@ -985,6 +1020,16 @@ export default function Dashboard() {
                 onChange={(e) => setNuevoServicio({ ...nuevoServicio, precio: e.target.value })}
                 className="w-full sm:w-36 border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
               />
+              <input
+                type="number"
+                min="5"
+                max="480"
+                step="5"
+                placeholder="Duración (min)"
+                value={nuevoServicio.duracion_minutos}
+                onChange={(e) => setNuevoServicio({ ...nuevoServicio, duracion_minutos: e.target.value })}
+                className="w-full sm:w-44 border-2 border-gray-200 rounded-xl px-4 py-3 focus:border-blue-500 outline-none"
+              />
               <button
                 type="submit"
                 disabled={guardandoServicio}
@@ -1010,6 +1055,7 @@ export default function Dashboard() {
                     <div>
                       <span className="font-semibold text-gray-800">{s.nombre}</span>
                       <span className="text-gray-500 ml-2">${s.precio}</span>
+                      <span className="text-gray-400 ml-2">· {s.duracion_minutos || 30} min</span>
                     </div>
                     <button
                       type="button"

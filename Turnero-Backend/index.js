@@ -65,6 +65,20 @@ const tools = [
 // Configuraciones básicas
 app.use(cors());
 app.use(express.json()); // Permite que el servidor entienda datos en formato JSON
+
+async function asegurarDuracionServicios() {
+  try {
+    await db.query(`ALTER TABLE servicios ADD COLUMN IF NOT EXISTS duracion_minutos INTEGER DEFAULT 30;`);
+    await db.query(`
+      UPDATE servicios s
+      SET duracion_minutos = COALESCE(s.duracion_minutos, n.duracion_turno_minutos, 30)
+      FROM negocios n
+      WHERE s.negocio_id = n.id
+    `);
+  } catch (error) {
+    console.error('Error asegurando duracion_minutos en servicios:', error.message);
+  }
+}
 // ==========================================
 //        SISTEMA DE AUTENTICACIÓN
 // ==========================================
@@ -223,7 +237,7 @@ app.post('/api/chat-bot', async (req, res) => {
 
           try {
             if (toolCall.function.name === "consultarServicios") {
-              const r = await db.query('SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1', [negocio_id]);
+              const r = await db.query('SELECT id, nombre, precio, duracion_minutos FROM servicios WHERE negocio_id = $1', [negocio_id]);
               dataForAi = r.rows;
             } 
             else if (toolCall.function.name === "consultarDisponibilidad") {
@@ -453,6 +467,20 @@ function getPublicApiBase() {
   );
 }
 
+function formatearFechaHoraHumana(fechaHora) {
+  if (!fechaHora) return '';
+  const base = String(fechaHora).replace(' ', 'T');
+  const fecha = new Date(base);
+  if (Number.isNaN(fecha.getTime())) return String(fechaHora);
+  return fecha.toLocaleString('es-AR', {
+    weekday: 'long',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
 function renderHtmlEstadoPublico(titulo, detalle) {
   return `<!doctype html>
   <html lang="es">
@@ -588,7 +616,7 @@ app.put('/api/negocio/perfil', verificarToken, async (req, res) => {
 
 // 1. CREAR un servicio (RUTA PROTEGIDA: Solo el dueño logueado puede hacerlo)
 app.post('/api/servicios', verificarToken, async (req, res) => {
-  const { nombre, precio } = req.body;
+  const { nombre, precio, duracion_minutos } = req.body;
   
   // ¡Acá está la magia del Token! El patovica (middleware) nos guardó 
   // los datos del dueño en req.negocioLogueado antes de dejarlo pasar.
@@ -603,14 +631,18 @@ app.post('/api/servicios', verificarToken, async (req, res) => {
   if (!Number.isFinite(precioNum) || precioNum < 0) {
     return res.status(400).json({ error: 'Precio inválido' });
   }
+  const duracionNum = Number(duracion_minutos);
+  if (!Number.isInteger(duracionNum) || duracionNum < 5 || duracionNum > 480) {
+    return res.status(400).json({ error: 'duracion_minutos debe ser un entero entre 5 y 480' });
+  }
 
   try {
     const query = `
-      INSERT INTO servicios (negocio_id, nombre, precio) 
-      VALUES ($1, $2, $3) 
+      INSERT INTO servicios (negocio_id, nombre, precio, duracion_minutos) 
+      VALUES ($1, $2, $3, $4) 
       RETURNING *;
     `;
-    const resultado = await db.query(query, [negocio_id, String(nombre).trim(), precioNum]);
+    const resultado = await db.query(query, [negocio_id, String(nombre).trim(), precioNum, duracionNum]);
     
     res.status(201).json({ 
       mensaje: 'Servicio agregado al catálogo', 
@@ -626,7 +658,7 @@ app.post('/api/servicios', verificarToken, async (req, res) => {
 app.get('/api/servicios/propios', verificarToken, async (req, res) => {
   try {
     const resultado = await db.query(
-      'SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1 ORDER BY nombre ASC',
+      'SELECT id, nombre, precio, duracion_minutos FROM servicios WHERE negocio_id = $1 ORDER BY nombre ASC',
       [req.negocioLogueado.id]
     );
     res.json(resultado.rows);
@@ -669,7 +701,7 @@ app.get('/api/servicios', async (req, res) => {
   }
 
   try {
-    const query = 'SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1 ORDER BY precio ASC';
+    const query = 'SELECT id, nombre, precio, duracion_minutos FROM servicios WHERE negocio_id = $1 ORDER BY precio ASC';
     const resultado = await db.query(query, [negocio_id]);
     
     res.json(resultado.rows);
@@ -873,10 +905,13 @@ app.post('/api/turnos', async (req, res) => {
     const horaTurno = String(fecha_hora).slice(11, 16);
     const diaSemana = diaSemanaDesdeFecha(fechaTurno);
     const duracionTurno = await db.query(
-      'SELECT duracion_turno_minutos FROM negocios WHERE id = $1',
-      [nid]
+      `SELECT COALESCE(s.duracion_minutos, n.duracion_turno_minutos) AS duracion_turno
+       FROM negocios n
+       LEFT JOIN servicios s ON s.id = $2 AND s.negocio_id = n.id
+       WHERE n.id = $1`,
+      [nid, servicio_id || null]
     );
-    const duracionMinutos = Number(duracionTurno.rows[0]?.duracion_turno_minutos || 30);
+    const duracionMinutos = Number(duracionTurno.rows[0]?.duracion_turno || 30);
 
     if (ridAsignado !== null) {
       const resRecurso = await db.query(
@@ -1013,7 +1048,8 @@ app.post('/api/turnos', async (req, res) => {
     // (Esto se ejecuta rapidísimo, así que lo dejamos primero)
     let linkWhatsApp = null;
     if (whatsapp_cliente) {
-      const textoBase = `¡Hola ${nombre_cliente}! 💈\nTe confirmamos tu turno para el día y hora: ${fecha_hora} en ${nombreNegocio}.\n¡Te esperamos!`;
+      const fechaHoraLimpia = formatearFechaHoraHumana(fecha_hora);
+      const textoBase = `¡Hola ${nombre_cliente}! 💈\nTe confirmamos tu turno para ${fechaHoraLimpia} en ${nombreNegocio}.\n¡Te esperamos!`;
       const textoCodificado = encodeURIComponent(textoBase);
       linkWhatsApp = `https://wa.me/${whatsapp_cliente}?text=${textoCodificado}`;
     }
@@ -1159,7 +1195,7 @@ app.put('/api/turnos/:id/cancelar', verificarToken, async (req, res) => {
 // Ruta para OBTENER los horarios libres de un día (VERSIÓN DINÁMICA SAAS)
 
 app.get('/api/turnos/disponibles', async (req, res) => {
-  const { negocio_id, fecha, recurso_id } = req.query;
+  const { negocio_id, fecha, recurso_id, servicio_id } = req.query;
   let recursoObjetivo = null;
 
   if (!negocio_id || !fecha) {
@@ -1167,8 +1203,13 @@ app.get('/api/turnos/disponibles', async (req, res) => {
   }
   const rid =
     recurso_id === undefined || recurso_id === null || recurso_id === '' ? null : Number(recurso_id);
+  const sid =
+    servicio_id === undefined || servicio_id === null || servicio_id === '' ? null : Number(servicio_id);
   if (rid !== null && (!Number.isInteger(rid) || rid < 1)) {
     return res.status(400).json({ error: 'recurso_id inválido' });
+  }
+  if (sid !== null && (!Number.isInteger(sid) || sid < 1)) {
+    return res.status(400).json({ error: 'servicio_id inválido' });
   }
 
   try {
@@ -1184,14 +1225,20 @@ app.get('/api/turnos/disponibles', async (req, res) => {
     }
 
     // 1. Buscamos la configuración EXACTA de este negocio
-    const queryNegocio = 'SELECT hora_apertura, hora_cierre, duracion_turno_minutos FROM negocios WHERE id = $1';
-    const resNegocio = await db.query(queryNegocio, [negocio_id]);
+    const queryNegocio = `
+      SELECT n.hora_apertura, n.hora_cierre, n.duracion_turno_minutos, s.duracion_minutos AS servicio_duracion
+      FROM negocios n
+      LEFT JOIN servicios s ON s.id = $2 AND s.negocio_id = n.id
+      WHERE n.id = $1
+    `;
+    const resNegocio = await db.query(queryNegocio, [negocio_id, sid]);
     
     if (resNegocio.rows.length === 0) {
       return res.status(404).json({ error: 'Negocio no encontrado' });
     }
     
     const config = resNegocio.rows[0];
+    const duracionElegida = Number(config.servicio_duracion || config.duracion_turno_minutos || 30);
 
     // 2. Función generadora de la grilla horaria matemática
     const generarGrilla = (apertura, cierre, intervalo) => {
@@ -1216,7 +1263,7 @@ app.get('/api/turnos/disponibles', async (req, res) => {
     };
 
     // 3. Armamos todos los horarios posibles de ese local
-    const horariosPosibles = generarGrilla(config.hora_apertura, config.hora_cierre, config.duracion_turno_minutos);
+    const horariosPosibles = generarGrilla(config.hora_apertura, config.hora_cierre, duracionElegida);
 
     const diaSemana = diaSemanaDesdeFecha(fecha);
     let horariosLibres = [];
@@ -1234,7 +1281,7 @@ app.get('/api/turnos/disponibles', async (req, res) => {
       const turnosOcupados = resOcupados.rows.map(row => row.hora_ocupada);
       horariosLibres = horariosPosibles.filter(
         hora =>
-          recursoHabilitadoEnHorario(recursoObjetivo, diaSemana, hora, config.duracion_turno_minutos) &&
+          recursoHabilitadoEnHorario(recursoObjetivo, diaSemana, hora, duracionElegida) &&
           !turnosOcupados.includes(hora)
       );
     } else {
@@ -1251,7 +1298,7 @@ app.get('/api/turnos/disponibles', async (req, res) => {
           configuracion_local: {
             apertura: config.hora_apertura,
             cierre: config.hora_cierre,
-            duracion_minutos: config.duracion_turno_minutos
+            duracion_minutos: duracionElegida
           },
           disponibles: []
         });
@@ -1270,7 +1317,7 @@ app.get('/api/turnos/disponibles', async (req, res) => {
       const ocupadosMap = new Map(ocupadosPorHoraRes.rows.map(r => [r.hora_ocupada, r.ocupados]));
       horariosLibres = horariosPosibles.filter(hora => {
         const habilitados = recursos.filter((r) =>
-          recursoHabilitadoEnHorario(r, diaSemana, hora, config.duracion_turno_minutos)
+          recursoHabilitadoEnHorario(r, diaSemana, hora, duracionElegida)
         );
         if (habilitados.length === 0) return false;
         return (ocupadosMap.get(hora) || 0) < habilitados.length;
@@ -1282,7 +1329,7 @@ app.get('/api/turnos/disponibles', async (req, res) => {
       configuracion_local: {
         apertura: config.hora_apertura,
         cierre: config.hora_cierre,
-        duracion_minutos: config.duracion_turno_minutos
+        duracion_minutos: duracionElegida
       },
       disponibles: horariosLibres
     });
@@ -1305,40 +1352,53 @@ app.get('/api/dashboard/metricas', verificarToken, async (req, res) => {
 
   try {
     const queryFacturacion = `
-      SELECT 
-        COALESCE(SUM(precio), 0) as total_facturado,
-        COUNT(id) as total_turnos
-      FROM turnos
-      WHERE negocio_id = $1 
-        AND estado = 'completado'
-        AND EXTRACT(MONTH FROM fecha_hora) = $2
-        AND EXTRACT(YEAR FROM fecha_hora) = $3
-    `;
-    const valoresFacturacion = [negocio_id, mes, anio];
-    
-    const queryHorarios = `
-      SELECT 
-        TO_CHAR(fecha_hora, 'HH24:MI') as hora,
-        COUNT(id) as cantidad_turnos
+      SELECT
+        COALESCE(SUM(CASE
+          WHEN EXTRACT(YEAR FROM fecha_hora) = $2 THEN precio
+          ELSE 0
+        END), 0) AS total_anual,
+        COALESCE(SUM(CASE
+          WHEN EXTRACT(MONTH FROM fecha_hora) = $3 AND EXTRACT(YEAR FROM fecha_hora) = $2 THEN precio
+          ELSE 0
+        END), 0) AS total_mensual,
+        COALESCE(SUM(CASE
+          WHEN fecha_hora >= date_trunc('week', NOW()) AND fecha_hora < date_trunc('week', NOW()) + INTERVAL '1 week' THEN precio
+          ELSE 0
+        END), 0) AS total_semanal,
+        COALESCE(SUM(CASE
+          WHEN DATE(fecha_hora) = CURRENT_DATE THEN precio
+          ELSE 0
+        END), 0) AS total_diario,
+        COUNT(CASE WHEN EXTRACT(MONTH FROM fecha_hora) = $3 AND EXTRACT(YEAR FROM fecha_hora) = $2 THEN 1 END) AS turnos_mes
       FROM turnos
       WHERE negocio_id = $1
-        AND estado != 'cancelado'
-      GROUP BY TO_CHAR(fecha_hora, 'HH24:MI')
-      ORDER BY cantidad_turnos DESC
+        AND estado = 'completado'
     `;
-    const valoresHorarios = [negocio_id];
+    const valoresFacturacion = [negocio_id, anio, mes];
 
-    // Ejecutamos las dos consultas de SQL en paralelo (es más rápido que esperar una y luego la otra)
-    const [resFacturacion, resHorarios] = await Promise.all([
+    const queryServicios = `
+      SELECT
+        COALESCE(s.nombre, 'Sin servicio') AS servicio,
+        COUNT(t.id)::int AS cantidad_turnos,
+        COALESCE(SUM(t.precio), 0) AS total_facturado
+      FROM turnos t
+      LEFT JOIN servicios s ON s.id = t.servicio_id
+      WHERE t.negocio_id = $1
+        AND t.estado = 'completado'
+      GROUP BY COALESCE(s.nombre, 'Sin servicio')
+      ORDER BY total_facturado DESC, cantidad_turnos DESC
+      LIMIT 6
+    `;
+
+    const [resFacturacion, resServicios] = await Promise.all([
       db.query(queryFacturacion, valoresFacturacion),
-      db.query(queryHorarios, valoresHorarios)
+      db.query(queryServicios, [negocio_id])
     ]);
 
-    // 3. Le devolvemos el paquete armado al Frontend
     res.json({
       periodo: `${mes}/${anio}`,
       resumen: resFacturacion.rows[0],
-      distribucion_horaria: resHorarios.rows
+      distribucion_servicios: resServicios.rows
     });
 
   } catch (error) {
@@ -1385,6 +1445,8 @@ app.get('/api/dashboard/retencion',verificarToken, async (req, res) => {
     res.status(500).json({ error: 'Hubo un problema buscando a los clientes perdidos' });
   }
 });
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en http://localhost:${PORT}`);
+asegurarDuracionServicios().finally(() => {
+  app.listen(PORT, () => {
+    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  });
 });
