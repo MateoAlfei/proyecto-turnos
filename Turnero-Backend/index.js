@@ -15,46 +15,51 @@ const { enviarMailConfirmacion, enviarMailCancelacion } = require('./email');
 // Definición de las herramientas para Gemini
 const tools = [
   {
-    functionDeclarations: [
-      {
-        name: "consultarServicios",
-        description: "Obtiene la lista de servicios y precios de la peluquería.",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            negocio_id: { type: "NUMBER", description: "El ID del negocio" }
-          },
-          required: ["negocio_id"]
-        }
-      },
-      {
-        name: "consultarDisponibilidad",
-        description: "Busca los horarios disponibles para una fecha específica.",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            negocio_id: { type: "NUMBER", description: "El ID del negocio" },
-            fecha: { type: "STRING", description: "Fecha en formato YYYY-MM-DD" }
-          },
-          required: ["negocio_id", "fecha"]
-        }
-      },
-      {
-        name: "crearReserva",
-        description: "Registra un nuevo turno en la base de datos.",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            negocio_id: { type: "NUMBER" },
-            nombre_cliente: { type: "STRING" },
-            whatsapp_cliente: { type: "STRING" },
-            servicio_id: { type: "NUMBER" },
-            fecha_hora: { type: "STRING", description: "Formato YYYY-MM-DD HH:mm" }
-          },
-          required: ["negocio_id", "nombre_cliente", "whatsapp_cliente", "servicio_id", "fecha_hora"]
-        }
+    type: "function",
+    function: {
+      name: "consultarServicios",
+      description: "Obtiene la lista de servicios y precios del local.",
+      parameters: {
+        type: "object",
+        properties: {
+          negocio_id: { type: "number", description: "El ID del negocio" }
+        },
+        required: ["negocio_id"]
       }
-    ]
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "consultarDisponibilidad",
+      description: "Busca los horarios disponibles para una fecha específica.",
+      parameters: {
+        type: "object",
+        properties: {
+          negocio_id: { type: "number" },
+          fecha: { type: "string", description: "Fecha en formato YYYY-MM-DD" }
+        },
+        required: ["negocio_id", "fecha"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "crearReserva",
+      description: "Registra un nuevo turno en la base de datos.",
+      parameters: {
+        type: "object",
+        properties: {
+          negocio_id: { type: "number" },
+          nombre_cliente: { type: "string" },
+          whatsapp_cliente: { type: "string" },
+          servicio_id: { type: "number" },
+          fecha_hora: { type: "string", description: "Formato YYYY-MM-DD HH:mm" }
+        },
+        required: ["negocio_id", "nombre_cliente", "whatsapp_cliente", "servicio_id", "fecha_hora"]
+      }
+    }
   }
 ];
 // Configuraciones básicas
@@ -158,97 +163,106 @@ app.post('/api/auth/registro', async (req, res) => {
     res.status(500).json({ error: 'Hubo un error al registrar el negocio (¿el email ya existe?)' });
   }
 });
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // 1. Agregá esta funcioncita justo arriba de tu app.post('/api/chat-bot', ...)
 // Esto es un temporizador para decirle a Node.js que espere un ratito.
-const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const { OpenAI } = require('openai');
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 app.post('/api/chat-bot', async (req, res) => {
   const { mensaje, whatsapp_cliente, negocio_id } = req.body;
 
   try {
-    // 1. EL TRUCO MULTI-TENANT: Buscamos para quién estamos trabajando
+    // 1. Buscamos el nombre del negocio (SaaS multi-tenant)
     const resNegocio = await db.query('SELECT nombre FROM negocios WHERE id = $1', [negocio_id]);
-    
     if (resNegocio.rows.length === 0) {
-      return res.status(404).json({ error: "Ese negocio no existe en la base de datos." });
+      return res.status(404).json({ error: "Ese negocio no existe." });
     }
     const nombreNegocio = resNegocio.rows[0].nombre;
 
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.0-flash", // Usá el modelo que te anduvo bien
-      tools: tools 
-    });
-
-    const chat = model.startChat();
     const fechaHoy = new Date().toISOString().split('T')[0]; 
     
-    // 2. PROMPT UNIVERSAL (Ya no dice Peluquería)
-    const promptSistema = `Sos el recepcionista virtual de "${nombreNegocio}". 
-    Hoy es la fecha: ${fechaHoy}.
-    Usá un tono amable, conciso, y un estilo argentino informal.
-    Tu objetivo es ayudar a los clientes a reservar turnos.
-    Para dar turnos, SIEMPRE consultá primero los servicios y la disponibilidad usando tus herramientas.
-    ID de este negocio: ${negocio_id}. 
-    WhatsApp del cliente: ${whatsapp_cliente}.`;
+    // 2. Armamos el historial de la conversación
+    const messages = [
+      { 
+        role: "system", 
+        content: `Sos el recepcionista virtual de "${nombreNegocio}". 
+        Hoy es: ${fechaHoy}.
+        Usá un tono amable y un estilo argentino informal.
+        Para dar turnos, SIEMPRE consultá primero los servicios y la disponibilidad usando tus herramientas.
+        ID de este negocio: ${negocio_id}. 
+        WhatsApp del cliente: ${whatsapp_cliente}.` 
+      },
+      { role: "user", content: mensaje }
+    ];
 
-    let result = await chat.sendMessage(`${promptSistema}\n\nCliente dice: ${mensaje}`);
-    let response = result.response;
+    let vueltas = 0;
+    let respuestaFinal = "";
 
-    let vueltas = 0; 
+    // 3. El Bucle de OpenAI
+    while (vueltas < 5) {
+      vueltas++;
+      
+      const response = await openai.chat.completions.create({
+        model: "gpt-5-nano", // El modelo correcto, rápido y baratísimo
+        messages: messages,
+        tools: tools,
+        tool_choice: "auto",
+      });
 
-    while (response.functionCalls() && vueltas < 5) {
-      vueltas++; 
-      const calls = response.functionCalls();
-      const functionResponses = []; 
+      const responseMessage = response.choices[0].message;
+      
+      // Guardamos lo que dijo/pidió la IA en el historial
+      messages.push(responseMessage);
 
-      for (const call of calls) {
-        let dataForAi = {};
-        
-        try {
-          if (call.name === "consultarServicios") {
-            const r = await db.query('SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1', [negocio_id]);
-            dataForAi = r.rows;
-          } 
-          
-          else if (call.name === "consultarDisponibilidad") {
-            const { fecha } = call.args;
-            const baseUrl = process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 3000}`;
-            const resDisp = await fetch(`${baseUrl}/api/turnos/disponibles?negocio_id=${negocio_id}&fecha=${fecha}`);
-            dataForAi = await resDisp.json();
+      // Si la IA decidió que necesita usar una herramienta...
+      if (responseMessage.tool_calls) {
+        for (const toolCall of responseMessage.tool_calls) {
+          const args = JSON.parse(toolCall.function.arguments);
+          let dataForAi = {};
+
+          try {
+            if (toolCall.function.name === "consultarServicios") {
+              const r = await db.query('SELECT id, nombre, precio FROM servicios WHERE negocio_id = $1', [negocio_id]);
+              dataForAi = r.rows;
+            } 
+            else if (toolCall.function.name === "consultarDisponibilidad") {
+              const baseUrl = process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 3000}`;
+              const resDisp = await fetch(`${baseUrl}/api/turnos/disponibles?negocio_id=${negocio_id}&fecha=${args.fecha}`);
+              dataForAi = await resDisp.json();
+            }
+            else if (toolCall.function.name === "crearReserva") {
+              const r = await db.query(
+                'INSERT INTO turnos (negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+                [negocio_id, args.servicio_id, args.fecha_hora, args.nombre_cliente, whatsapp_cliente]
+              );
+              dataForAi = { mensaje: "Turno reservado con éxito", id: r.rows[0].id };
+            }
+          } catch (error) {
+            console.error(`Error en función ${toolCall.function.name}:`, error);
+            dataForAi = { error: "Hubo un fallo en la base de datos." };
           }
 
-          else if (call.name === "crearReserva") {
-            const { servicio_id, fecha_hora, nombre_cliente } = call.args;
-            const r = await db.query(
-              'INSERT INTO turnos (negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-              [negocio_id, servicio_id, fecha_hora, nombre_cliente, whatsapp_cliente]
-            );
-            dataForAi = { mensaje: "Turno reservado con éxito en la base de datos", id: r.rows[0].id };
-          }
-        } catch (error) {
-          console.error(`Error ejecutando la función ${call.name}:`, error);
-          dataForAi = { error: "Hubo un fallo al buscar en la base de datos." };
+          // Le devolvemos a la IA el resultado de su consulta
+          messages.push({
+            tool_call_id: toolCall.id,
+            role: "tool",
+            name: toolCall.function.name,
+            content: JSON.stringify(dataForAi),
+          });
         }
-
-        functionResponses.push({
-          functionResponse: { name: call.name, response: { content: dataForAi } }
-        });
+      } else {
+        // Si no pidió herramientas, significa que ya tiene la respuesta final en texto
+        respuestaFinal = responseMessage.content;
+        break; // Rompemos el bucle
       }
-
-      await esperar(1500); 
-
-      result = await chat.sendMessage(functionResponses);
-      response = result.response;
     }
 
-    res.json({ respuesta: response.text() });
+    res.json({ respuesta: respuestaFinal });
 
   } catch (error) {
-    console.error("Error en el bot:", error);
-    res.status(500).json({ error: "No pude procesar el mensaje" });
+    console.error("Error crítico en el bot:", error);
+    res.status(500).json({ error: "No pude procesar el mensaje." });
   }
 });
 // Ruta para INICIAR SESIÓN (Login)
